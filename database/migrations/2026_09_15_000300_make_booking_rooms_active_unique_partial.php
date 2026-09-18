@@ -18,6 +18,7 @@ return new class extends Migration
     {
         Schema::table('booking_rooms', function (Blueprint $table) {
             if (Schema::hasIndex('booking_rooms', 'booking_rooms_room_window_active_unique')) {
+		$table->dropForeign(['room_id']); 
                 $table->dropUnique('booking_rooms_room_window_active_unique');
             }
         });
