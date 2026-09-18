@@ -38,18 +38,6 @@ return new class extends Migration
             $table->index('hotel_id');
         });
 
-        Schema::create('amenity_room', function (Blueprint $table) {
-            $table->id();
-            $table->unsignedBigInteger('hotel_id');
-            $table->foreignId('room_id')->constrained('rooms')->onDelete('cascade');
-            $table->foreignId('amenity_id')->constrained('amenities')->onDelete('cascade');
-            $table->timestamps();
-
-            $table->foreign('hotel_id')->references('id')->on('hotels')->cascadeOnDelete();
-            $table->unique(['room_id', 'amenity_id']);
-            $table->index('hotel_id');
-        });
-
         // Physical room inventory.
         Schema::create('rooms', function (Blueprint $table) {
             $table->id();
@@ -68,6 +56,20 @@ return new class extends Migration
             $table->unique(['hotel_id', 'room_number']);
             $table->index(['hotel_id', 'room_type_id', 'status']);
         });
+
+        Schema::create('amenity_room', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('hotel_id');
+            $table->foreignId('room_id')->constrained('rooms')->onDelete('cascade');
+            $table->foreignId('amenity_id')->constrained('amenities')->onDelete('cascade');
+            $table->timestamps();
+
+            $table->foreign('hotel_id')->references('id')->on('hotels')->cascadeOnDelete();
+            $table->unique(['room_id', 'amenity_id']);
+            $table->index('hotel_id');
+        });
+
+
     }
 
     public function down(): void
