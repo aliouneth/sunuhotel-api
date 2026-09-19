@@ -4,10 +4,12 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Hotel;
+use App\Models\HotelImage;
 use App\Models\PlatformSettings;
 use App\Models\Role;
 use App\Models\Room;
 use App\Models\RoomType;
+use App\Models\Review;
 use App\Models\User;
 use App\Services\AuditLogger;
 use App\Support\Tenancy\HotelScope;
@@ -38,8 +40,7 @@ class PlatformAdminController extends Controller
         }
 
         return response()->json([
-            'data' => [
-                'hotels' => array_sum($counts),
+            'data' => [                'hotels' => array_sum($counts),
                 'users' => (int) \App\Models\User::query()->whereNotNull('hotel_id')->count(),
                 'pending' => $counts['pending'],
                 'by_status' => $counts,
@@ -96,14 +97,19 @@ class PlatformAdminController extends Controller
             'website' => ['sometimes', 'nullable', 'url', 'max:191'],
             'currency' => ['sometimes', 'string', 'size:3'],
             'timezone' => ['sometimes', 'string', 'max:64', 'timezone'],
-            'status' => ['sometimes', 'string', Rule::in(Hotel::STATUSES)],
-            'locale' => ['sometimes', 'string', 'in:fr,en'],
+  'status' => ['sometimes', 'string', Rule::in(Hotel::STATUSES)],
+  'stars' => ['sometimes', 'nullable', 'integer', 'between:1,5'],
+  'locale' => ['sometimes', 'string', 'in:fr,en'],
             'logo' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
+            'images' => ['nullable', 'array', 'max:5'],
+            'images.*' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
+            'images_to_delete' => ['nullable', 'array'],
+            'images_to_delete.*' => ['nullable', 'integer', 'exists:hotel_images,id'],
         ]);
 
         $update = collect($validated)->only([
-            'name', 'legal_name', 'slug', 'address', 'city', 'country',
-            'phone', 'email', 'website', 'currency', 'timezone', 'status',
+        'name', 'legal_name', 'slug', 'address', 'city', 'country',
+        'phone', 'email', 'website', 'currency', 'timezone', 'status', 'stars',
         ])->all();
 
         if (($validated['slug'] ?? null) === null) {
@@ -123,6 +129,30 @@ class PlatformAdminController extends Controller
 
         if ($request->hasFile('logo')) {
             $hotel->setLogo($request->file('logo'));
+        }
+
+        if ($request->hasFile('images')) {
+            foreach ($hotel->hotelImages as $img) {
+                $old = public_path(ltrim($img->image_path, '/'));
+                if (is_file($old)) { unlink($old); }
+            }
+            $hotel->hotelImages()->delete();
+            $sort = 0;
+            foreach ($request->file('images') as $file) {
+                $img = new HotelImage();
+                $img->setImage($file, $hotel->id, $sort++);
+            }
+        }
+
+        if ($request->has('images_to_delete')) {
+            foreach ($request->input('images_to_delete') as $imgId) {
+                $img = $hotel->hotelImages()->find($imgId);
+                if ($img) {
+                    $old = public_path(ltrim($img->image_path, '/'));
+                    if (is_file($old)) { unlink($old); }
+                    $img->delete();
+                }
+            }
         }
 
         AuditLogger::critical($hotel, 'tenant.updated', [
@@ -214,6 +244,36 @@ class PlatformAdminController extends Controller
             ->get();
 
         return response()->json(['data' => $types]);
+    }
+
+    /**
+     * All client reviews for a hotel, including hidden ones (moderation view).
+     */
+    public function reviews(Request $request, Hotel $hotel)
+    {
+        return response()->json(['data' => $hotel->reviews()->orderByDesc('created_at')->get()]);
+    }
+
+    /**
+     * Moderate a review: publish or hide it.
+     */
+    public function moderateReview(Request $request, Hotel $hotel, Review $review)
+    {
+        abort_if($review->hotel_id !== $hotel->id, 404);
+
+        $validated = $request->validate([
+            'status' => ['required', Rule::in(Review::STATUSES)],
+        ]);
+
+        $review->update(['status' => $validated['status']]);
+
+        AuditLogger::critical($hotel, 'reviews.moderated', [
+            'by' => auth('sanctum')->user()->email,
+            'review_id' => $review->id,
+            'status' => $validated['status'],
+        ]);
+
+        return response()->json(['data' => $review->fresh()]);
     }
 
     public function storeRoomType(Request $request, Hotel $hotel)
@@ -503,10 +563,12 @@ class PlatformAdminController extends Controller
     {
         $owner = $hotel->users()->orderBy('id')->first();
 
-        return [
-            'id' => $hotel->id,
-            'slug' => $hotel->slug,
-            'name' => $hotel->name,
+    return [
+        'id' => $hotel->id,
+        'uuid' => $hotel->uuid,
+        'slug' => $hotel->slug,
+        'stars' => $hotel->stars,
+        'name' => $hotel->name,
             'legal_name' => $hotel->legal_name,
             'address' => $hotel->address,
             'city' => $hotel->city,
@@ -519,6 +581,7 @@ class PlatformAdminController extends Controller
             'status' => $hotel->status,
             'logo_url' => $hotel->logo_url,
             'locale' => $hotel->settings['locale'] ?? null,
+            'images' => $hotel->hotelImages->map(fn ($img) => ['id' => $img->id, 'image_url' => $img->image_url, 'sort_order' => $img->sort_order])->values(),
             'created_at' => $hotel->created_at?->toISOString(),
             'users_count' => $hotel->users_count ?? $hotel->users()->count(),
             'rooms_count' => $hotel->rooms_count ?? $hotel->rooms()->count(),

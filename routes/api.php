@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\EmployeeController;
 use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\ExpenseTypeController;
+use App\Http\Controllers\Api\V1\GuestAuthController;
 use App\Http\Controllers\Api\V1\GuestController;
 use App\Http\Controllers\Api\V1\HotelController;
 use App\Http\Controllers\Api\V1\InvitationController;
@@ -16,6 +17,7 @@ use App\Http\Controllers\Api\V1\PlatformAdminController;
 use App\Http\Controllers\Api\V1\PublicHotelController;
 use App\Http\Controllers\Api\V1\RatePlanController;
 use App\Http\Controllers\Api\V1\ReportController;
+use App\Http\Controllers\Api\V1\ReviewController;
 use App\Http\Controllers\Api\V1\RoomController;
 use App\Http\Controllers\Api\V1\RoomTypeController;
 use App\Http\Controllers\Api\V1\TeamController;
@@ -45,12 +47,22 @@ Route::prefix('v1')->group(function () {
     Route::post('/invitations/{token}/accept', [InvitationController::class, 'accept']);
 
     Route::get('/hotels/search', [PublicHotelController::class, 'search']);
+    Route::get('/hotels/cities', [PublicHotelController::class, 'cities']);
     Route::get('/hotels/{hotel}/public', [PublicHotelController::class, 'show'])->where('hotel', '[a-z0-9-]+');
     Route::get('/hotels/{hotel}/public/availability', [PublicHotelController::class, 'availability'])->where('hotel', '[a-z0-9-]+');
     Route::post('/hotels/{hotel}/public/bookings', [PublicHotelController::class, 'storeBooking'])->where('hotel', '[a-z0-9-]+');
+    Route::post('/hotels/{hotel}/public/reviews', [PublicHotelController::class, 'storeReview'])->where('hotel', '[a-z0-9-]+');
 
     // Public corporate contact info for the registration ("under review") screen.
     Route::get('/platform/support', [PlatformAdminController::class, 'support']);
+
+    /* ---------------------- Guest self-service ------------------------- */
+    // Guests log in with email + password to view their own reservations.
+    // These live OUTSIDE the `tenant` middleware because a guest record may be
+    // found across multiple hotels and `TokenAbilities` scopes staff tokens.
+    Route::post('/guests/login', [GuestAuthController::class, 'login']);
+    Route::get('/guests/me', [GuestAuthController::class, 'me'])->middleware('auth:sanctum');
+    Route::get('/guests/me/bookings', [GuestAuthController::class, 'myBookings'])->middleware('auth:sanctum');
 
     /* ------------------------ Platform administration ------------------- */
 
@@ -68,6 +80,8 @@ Route::prefix('v1')->group(function () {
         Route::post('/hotels/{hotel}/room-types/import', [PlatformAdminController::class, 'importRoomTypes']);
         Route::put('/hotels/{hotel}/room-types/{roomType}', [PlatformAdminController::class, 'updateRoomType']);
         Route::delete('/hotels/{hotel}/room-types/{roomType}', [PlatformAdminController::class, 'destroyRoomType']);
+        Route::get('/hotels/{hotel}/reviews', [PlatformAdminController::class, 'reviews']);
+        Route::post('/hotels/{hotel}/reviews/{review}/moderate', [PlatformAdminController::class, 'moderateReview']);
         Route::get('/hotels/{hotel}/users', [PlatformAdminController::class, 'users']);
         Route::post('/hotels/{hotel}/users', [PlatformAdminController::class, 'storeUser']);
         Route::put('/hotels/{hotel}/users/{user}', [PlatformAdminController::class, 'updateUser']);
@@ -142,6 +156,7 @@ Route::prefix('v1')->group(function () {
         Route::get('reports/export', [ReportController::class, 'export']);
 
         Route::get('dashboard', [DashboardController::class, 'summary']);
+        Route::get('reviews', [ReviewController::class, 'index']);
     });
 });
 

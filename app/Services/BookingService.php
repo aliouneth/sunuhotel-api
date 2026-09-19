@@ -394,6 +394,10 @@ final class BookingService
             ? mb_strtolower(trim((string) $data['email']))
             : null;
 
+        $password = ! empty($data['password'])
+            ? (string) $data['password']
+            : null;
+
         if ($email) {
             $existing = Guest::query()
                 ->where('hotel_id', $hotel->id)
@@ -402,11 +406,18 @@ final class BookingService
                 ->first();
 
             if ($existing) {
+                // First-time password set: allow a returning guest (who already
+                // holds a record from a prior booking) to create an account.
+                if ($password && ! $existing->password) {
+                    $existing->password = $password;
+                    $existing->save();
+                }
+
                 return $existing;
             }
         }
 
-        return Guest::create([
+        $guest = Guest::create([
             'hotel_id' => $hotel->id,
             'first_name' => (string) ($data['first_name'] ?? ''),
             'last_name' => (string) ($data['last_name'] ?? ''),
@@ -415,7 +426,10 @@ final class BookingService
             'nationality' => $data['nationality'] ?? null,
             'notes' => $data['notes'] ?? null,
             'created_by' => $actor?->id,
+            'password' => $password,
         ]);
+
+        return $guest;
     }
 
     private function lockRooms(array $roomIds): void

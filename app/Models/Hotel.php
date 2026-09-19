@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Str;
@@ -21,7 +22,7 @@ class Hotel extends Model
     public const SAMPLE_HOTEL_SLUG = 'sunuhotel-dakar';
 
     protected $fillable = [
-        'uuid', 'slug', 'name', 'legal_name', 'address', 'city', 'country',
+        'uuid', 'slug', 'stars', 'name', 'legal_name', 'address', 'city', 'country',
         'phone', 'email', 'website', 'timezone', 'currency', 'tax_rate',
         'check_in_time', 'check_out_time', 'logo_path', 'settings', 'status',
         'trial_ends_at', 'created_by',
@@ -44,6 +45,16 @@ class Hotel extends Model
         }
 
         return request()->getSchemeAndHttpHost().'/'.ltrim($this->logo_path, '/');
+    }
+
+    public function reviews()
+    {
+        return $this->hasMany(Review::class);
+    }
+
+    public function hotelImages(): HasMany
+    {
+        return $this->hasMany(HotelImage::class)->orderBy('sort_order');
     }
 
     /**

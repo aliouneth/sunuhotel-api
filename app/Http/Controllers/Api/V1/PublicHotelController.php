@@ -41,6 +41,7 @@ class PublicHotelController extends Controller
             'guest.last_name' => ['required', 'string', 'max:100'],
             'guest.email' => ['nullable', 'email', 'max:191'],
             'guest.phone' => ['nullable', 'string', 'max:40'],
+            'guest.password' => ['nullable', 'string', 'min:8', 'max:191'],
             'check_in' => ['required', 'date'],
             'check_out' => ['required', 'date', 'after:check_in'],
             'rooms' => ['required', 'array', 'min:1'],
@@ -99,7 +100,22 @@ class PublicHotelController extends Controller
 
         $hotels = $query->orderBy('name')
             ->take(30)
-            ->get(['id', 'name', 'slug', 'city', 'country', 'currency', 'phone', 'email']);
+            ->get(['id', 'name', 'slug', 'city', 'country', 'currency', 'phone', 'email', 'logo_path'])
+            ->load('hotelImages');
+
+        // Attach the uploaded gallery as a ready-to-render `images` list so the
+        // public search cards can display an image scroller (logo only as fallback).
+        $hotels->each(function (Hotel $hotel) {
+            $hotel->setAttribute('images', $hotel->hotelImages
+                ->sortBy('sort_order')
+                ->map(fn ($img) => [
+                    'id' => $img->id,
+                    'sort_order' => $img->sort_order,
+                    'image_url' => $img->image_url,
+                ])
+                ->values()
+                ->all());
+        });
 
         // When dates are supplied, keep only hotels with at least one room
         // free for the whole window and attach the list of bookable rooms
@@ -139,6 +155,25 @@ class PublicHotelController extends Controller
         }
 
         return response()->json(['data' => $hotels]);
+    }
+
+    /**
+     * Distinct cities that currently have at least one active hotel, so the
+     * public search form can offer a truthful city dropdown.
+     */
+    public function cities()
+    {
+        return response()->json([
+            'data' => Hotel::query()
+                ->where('status', 'active')
+                ->whereNotNull('city')
+                ->where('city', '!=', '')
+                ->distinct()
+                ->orderBy('city')
+                ->pluck('city')
+                ->values()
+                ->all(),
+        ]);
     }
 
     public function show(string $slug)

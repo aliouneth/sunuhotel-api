@@ -38,6 +38,7 @@ class HotelController extends Controller
             'tax_rate' => ['sometimes', 'numeric', 'between:0,100'],
             'check_in_time' => ['sometimes', 'date_format:H:i'],
             'check_out_time' => ['sometimes', 'date_format:H:i'],
+            'stars' => ['sometimes', 'nullable', 'integer', 'between:1,5'],
             'settings' => ['sometimes', 'array'],
             'logo' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
         ]);
