@@ -40,7 +40,7 @@ class PublicHotelController extends Controller
             'guest.first_name' => ['required', 'string', 'max:100'],
             'guest.last_name' => ['required', 'string', 'max:100'],
             'guest.email' => ['nullable', 'email', 'max:191'],
-            'guest.phone' => ['nullable', 'string', 'max:40'],
+            'guest.phone' => ['required', 'string', 'max:40'],
             'guest.password' => ['nullable', 'string', 'min:8', 'max:191'],
             'check_in' => ['required', 'date'],
             'check_out' => ['required', 'date', 'after:check_in'],
@@ -140,9 +140,21 @@ class PublicHotelController extends Controller
                         ->get()
                         ->keyBy('room_type_id');
 
-                    $rooms = $rooms->map(function (Room $room) use ($planByType) {
-                        $rate = $room->daily_rate_cents ?? $planByType->get($room->room_type_id)?->base_rate_cents ?? 0;
-                        $room->setAttribute('rate_cents', (int) $rate);
+                    $promoByType = \App\Models\Promotion::runningByTypeForHotel($hotel->id);
+
+                    $rooms = $rooms->map(function (Room $room) use ($planByType, $promoByType) {
+                        $regular = $room->daily_rate_cents ?? $planByType->get($room->room_type_id)?->base_rate_cents ?? 0;
+
+                        $room->setAttribute('original_rate_cents', (int) $regular);
+
+                        $promo = $promoByType->get($room->room_type_id);
+                        if ($promo) {
+                            $room->setAttribute('promo_rate_cents', (int) $promo->promo_rate_cents);
+                            $room->setAttribute('promo_title', $promo->title);
+                            $room->setAttribute('rate_cents', (int) $promo->promo_rate_cents);
+                        } else {
+                            $room->setAttribute('rate_cents', (int) $regular);
+                        }
 
                         return $room;
                     })->values();
@@ -176,6 +188,62 @@ class PublicHotelController extends Controller
         ]);
     }
 
+    /**
+     * Promotions running for the current period, for the public homepage.
+     * Each entry carries the hotel's name/city/slug, a lead image (first
+     * gallery image, falling back to the logo), the average guest rating from
+     * published reviews, and the discounted room type with crossed-out regular
+     * rate vs the promo rate.
+     */
+    public function promotions()
+    {
+        $promos = \App\Models\Promotion::query()
+            ->running()
+            ->with([
+                'roomType:id,name',
+                'hotel:id,name,slug,city,country,currency,logo_path,status',
+                'hotel.hotelImages:id,hotel_id,image_path,sort_order',
+            ])
+            ->orderByDesc('is_active')
+            ->orderBy('created_at')
+            ->get()
+            ->filter(fn (\App\Models\Promotion $p) => $p->hotel?->status === 'active')
+            ->values();
+
+        return response()->json([
+            'data' => $promos->map(function (\App\Models\Promotion $p) {
+                $hotel = $p->hotel;
+                $image = $hotel->hotelImages->sortBy('sort_order')->first();
+
+                $ratingAvg = (float) $hotel->reviews()
+                    ->published()
+                    ->avg('rating');
+
+                return [
+                    'id' => $p->id,
+                    'title' => $p->title,
+                    'starts_on' => $p->starts_on->toDateString(),
+                    'ends_on' => $p->ends_on->toDateString(),
+                    'original_rate_cents' => $p->original_rate_cents,
+                    'promo_rate_cents' => $p->promo_rate_cents,
+                    'currency' => $p->currency,
+                    'room_type' => $p->roomType ? ['id' => $p->roomType->id, 'name' => $p->roomType->name] : null,
+                    'hotel' => [
+                        'id' => $hotel->id,
+                        'name' => $hotel->name,
+                        'slug' => $hotel->slug,
+                        'city' => $hotel->city,
+                        'country' => $hotel->country,
+                        'currency' => $hotel->currency,
+                        'image_url' => $image?->image_url ?? $hotel->logo_url,
+                        'rating' => $ratingAvg > 0 ? round($ratingAvg, 1) : null,
+                        'rating_count' => $hotel->reviews()->published()->count(),
+                    ],
+                ];
+            }),
+        ]);
+    }
+
     public function show(string $slug)
     {
         $hotel = Hotel::query()->where('slug', $slug)->where('status', 'active')->first();
@@ -185,6 +253,10 @@ class PublicHotelController extends Controller
         }
 
         $roomTypes = $hotel->roomTypes()->where('is_active', true)->get();
+
+        // Running promotions override the effective nightly rate for their room
+        // type, and the crossed-out original rate is still exposed for the UI.
+        $promoByType = \App\Models\Promotion::runningByTypeForHotel($hotel->id);
 
         // Effective nightly rate per room type = the same source the booking
         // engine prices from: the room's own daily rate wins, then the active
@@ -202,16 +274,26 @@ class PublicHotelController extends Controller
             ->get()
             ->keyBy('room_type_id');
 
-        $roomTypes = $roomTypes->map(function ($type) use ($roomsByType, $planByType) {
+        $roomTypes = $roomTypes->map(function ($type) use ($roomsByType, $planByType, $promoByType) {
             $effective = $roomsByType->get($type->id)
                 ?->map(fn (Room $room) => $room->daily_rate_cents
                     ?? $planByType->get($room->room_type_id)?->base_rate_cents
                     ?? 0)
                 ->min();
 
-            $type->setAttribute('nightly_rate_cents', (int) ($effective
+            $regular = (int) ($effective
                 ?? $planByType->get($type->id)?->base_rate_cents
-                ?? $type->base_rate_cents));
+                ?? $type->base_rate_cents);
+
+            $type->setAttribute('nightly_rate_cents', $regular);
+
+            $promo = $promoByType->get($type->id);
+            if ($promo) {
+                $type->setAttribute('original_rate_cents', $regular);
+                $type->setAttribute('promo_rate_cents', (int) $promo->promo_rate_cents);
+                $type->setAttribute('promo_title', $promo->title);
+                $type->setAttribute('nightly_rate_cents', (int) $promo->promo_rate_cents);
+            }
 
             return $type;
         });
@@ -253,7 +335,8 @@ class PublicHotelController extends Controller
         );
 
         // Effective nightly rate per room, same priority as BookingService
-        // (room daily rate > active rate plan base).
+        // (room daily rate > active rate plan base), overridden by any running
+        // promotion for the room's room type.
         $planByType = RatePlan::query()
             ->where('hotel_id', $hotel->id)
             ->whereIn('room_type_id', $rooms->pluck('room_type_id')->unique()->all())
@@ -261,9 +344,21 @@ class PublicHotelController extends Controller
             ->get()
             ->keyBy('room_type_id');
 
-        $rooms = $rooms->map(function (Room $room) use ($planByType) {
-            $rate = $room->daily_rate_cents ?? $planByType->get($room->room_type_id)?->base_rate_cents ?? 0;
-            $room->setAttribute('rate_cents', (int) $rate);
+        $promoByType = \App\Models\Promotion::runningByTypeForHotel($hotel->id);
+
+        $rooms = $rooms->map(function (Room $room) use ($planByType, $promoByType) {
+            $regular = $room->daily_rate_cents ?? $planByType->get($room->room_type_id)?->base_rate_cents ?? 0;
+
+            $room->setAttribute('original_rate_cents', (int) $regular);
+
+            $promo = $promoByType->get($room->room_type_id);
+            if ($promo) {
+                $room->setAttribute('promo_rate_cents', (int) $promo->promo_rate_cents);
+                $room->setAttribute('promo_title', $promo->title);
+                $room->setAttribute('rate_cents', (int) $promo->promo_rate_cents);
+            } else {
+                $room->setAttribute('rate_cents', (int) $regular);
+            }
 
             return $room;
         })->values();

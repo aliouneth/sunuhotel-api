@@ -20,7 +20,11 @@ class ExpenseController extends Controller
             ->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))
             ->when($request->filled('from'), fn ($q) => $q->whereDate('incurred_on', '>=', $request->string('from')))
             ->when($request->filled('to'), fn ($q) => $q->whereDate('incurred_on', '<=', $this->normalizeTo($request->string('to')->toString())))
-            ->when($request->filled('search'), fn ($q) => $q->where('description', 'like', '%'.$request->string('search').'%'))
+            ->when($request->filled('payment_method'), fn ($q) => $q->where('payment_method', $request->string('payment_method')))
+            ->when($request->filled('search'), fn ($q) => $q->where(fn ($q2) =>
+                $q2->where('description', 'like', '%'.$request->string('search').'%')
+                    ->orWhere('paid_to', 'like', '%'.$request->string('search').'%')
+            ))
             ->orderByDesc('incurred_on')
             ->orderByDesc('id')
             ->paginate(50);
@@ -64,6 +68,8 @@ class ExpenseController extends Controller
         $validated = $request->validate([
             'expense_type_id' => ['nullable', 'exists:expense_types,id'],
             'employee_id' => ['nullable', 'exists:employees,id'],
+            'paid_to' => ['nullable', 'string', 'max:120'],
+            'payment_method' => ['nullable', 'in:cash,card,bank_transfer,mobile_money,check'],
             'description' => ['required', 'string', 'max:200'],
             'amount_cents' => ['required', 'integer', 'min:1'],
             'incurred_on' => ['required', 'date'],
@@ -79,6 +85,8 @@ class ExpenseController extends Controller
             'hotel_id' => $request->user()->hotel_id,
             'expense_type_id' => $validated['expense_type_id'] ?? null,
             'employee_id' => $validated['employee_id'] ?? null,
+            'paid_to' => $validated['paid_to'] ?? null,
+            'payment_method' => $validated['payment_method'] ?? null,
             'description' => $validated['description'],
             'amount_cents' => $validated['amount_cents'],
             'incurred_on' => $validated['incurred_on'],
@@ -111,6 +119,8 @@ class ExpenseController extends Controller
         $validated = $request->validate([
             'expense_type_id' => ['nullable', 'exists:expense_types,id'],
             'employee_id' => ['nullable', 'exists:employees,id'],
+            'paid_to' => ['nullable', 'string', 'max:120'],
+            'payment_method' => ['sometimes', 'nullable', 'in:cash,card,bank_transfer,mobile_money,check'],
             'description' => ['sometimes', 'string', 'max:200'],
             'amount_cents' => ['sometimes', 'integer', 'min:1'],
             'incurred_on' => ['sometimes', 'date'],

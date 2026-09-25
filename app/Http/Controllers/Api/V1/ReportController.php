@@ -58,6 +58,42 @@ class ReportController extends Controller
     }
 
     /**
+     * Profit &amp; loss for a window: total non-cancelled revenue (same
+     * revenueTrend definition as /reports/revenue) minus total non-cancelled
+     * expenses over the same dates. Net = revenue - expenses.
+     */
+    public function profitLoss(Request $request)
+    {
+        $this->authorize('reports.view');
+
+        $validated = $request->validate([
+            'from' => ['required', 'date'],
+            'to' => ['required', 'date', 'after_or_equal:from'],
+        ]);
+
+        $hotel = $request->user()->hotel;
+
+        $revenueCents = (int) $this->reports->revenueTrend($hotel, $validated['from'], $validated['to'])->sum('revenue_cents');
+
+        $expensesCents = (int) \App\Models\Expense::query()
+            ->where('hotel_id', $hotel->id)
+            ->where('status', '!=', 'cancelled')
+            ->whereDate('incurred_on', '>=', $validated['from'])
+            ->whereDate('incurred_on', '<=', $validated['to'])
+            ->sum('amount_cents');
+
+        return response()->json([
+            'data' => [
+                'from' => $validated['from'],
+                'to' => $validated['to'],
+                'revenue_cents' => $revenueCents,
+                'expenses_cents' => $expensesCents,
+                'net_cents' => $revenueCents - $expensesCents,
+            ],
+        ]);
+    }
+
+    /**
      * Downloadable report (CSV or JSON). Accepts format=json,file=revenue|kpis|occupancy|bookings.
      */
     public function export(Request $request)

@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 
 use App\Exceptions\BookingConflictException;
 use App\Exceptions\ValidationException;
@@ -29,6 +29,30 @@ return Application::configure(basePath: dirname(__DIR__))
             'can' => \Illuminate\Auth\Middleware\Authorize::class,
             'platform.admin' => EnsurePlatformAdmin::class,
         ]);
+    })
+    ->withSchedule(function (\Illuminate\Console\Scheduling\Schedule $schedule) {
+        $billing = new \App\Services\BillingService();
+
+        // 1st 09:00 â€” generate this month's invoices, settle from wallet credit.
+        $schedule->call(fn () => $billing->ensureCurrentMonth())
+            ->name('billing.ensureCurrentMonth')
+            ->monthlyOn(1, '09:00')
+            ->timezone(config('app.timezone'))
+            ->withoutOverlapping();
+
+        // 5th 09:00 â€” mark last month's still-pending invoices overdue.
+        $schedule->call(fn () => $billing->markOverdue())
+            ->name('billing.markOverdue')
+            ->monthlyOn(5, '09:00')
+            ->timezone(config('app.timezone'))
+            ->withoutOverlapping();
+
+        // 6th 09:00 â€” suspend hotels whose previous-month invoice is overdue.
+        $schedule->call(fn () => $billing->suspendOverdue())
+            ->name('billing.suspendOverdue')
+            ->monthlyOn(6, '09:00')
+            ->timezone(config('app.timezone'))
+            ->withoutOverlapping();
     })
     ->withExceptions(function (Exceptions $exceptions) {
         // Laravel validation -> consistent error envelope.

@@ -21,6 +21,23 @@ final class HotelContext
 
     private static ?Hotel $hotel = null;
 
+    /**
+     * Re-entrancy guard for the Sanctum auth resolution path.
+     *
+     * Eloquent's per-model HotelScope runs this same class: applying the scope
+     * calls id() -> user() -> auth('sanctum')->user(), and resolving that user
+     * makes Sanctum load the token's `tokenable` (a Guest) — whose query, once
+     * again, applies the HotelScope -> id() -> user() ... and so on until
+     * Xdebug aborts the script at 512 frames.
+     *
+     * Setting this flag while the user is being resolved makes those inner,
+     * recursive calls bail out with null instead of re-entering auth, which
+     * yields the *same* tenant value on the outermost frame without the loop.
+     * Guest auth/login are unaffected: they run outside the tenant middleware
+     * (and outside Sanctum's token resolution), so they never hit the guard.
+     */
+    private static bool $resolvingUser = false;
+
     /** Resolved lazily from container so tests can swap the request user. */
     public static function id(): ?int
     {
@@ -67,8 +84,23 @@ final class HotelContext
         return self::id();
     }
 
-    private static function user(): ?\App\Models\User
+    private static function user(): \App\Models\User|\App\Models\Guest|null
     {
-        return auth('sanctum')->user() ?? auth()->user();
+        // Re-entrancy guard. The Sanctum tokenable (a Guest) carries this exact
+        // HotelScope; loading it re-enters HotelContext::id() -> user(). When
+        // the flag is already set we short-circuit with null so the inner,
+        // recursive frame gets no tenant instead of calling auth() again (which
+        // would resolve the token -> tokenable -> scope -> ... until Xdebug
+        // kills the script at 512 frames).
+        if (self::$resolvingUser) {
+            return null;
+        }
+
+        self::$resolvingUser = true;
+        try {
+            return auth('sanctum')->user() ?? auth()->user();
+        } finally {
+            self::$resolvingUser = false;
+        }
     }
 }

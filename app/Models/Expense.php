@@ -13,8 +13,9 @@ class Expense extends Model
     public const STATUSES = ['pending', 'paid', 'cancelled'];
 
     protected $fillable = [
-        'hotel_id', 'expense_type_id', 'employee_id', 'description', 'amount_cents',
-        'incurred_on', 'paid_on', 'status', 'created_by_name', 'notes',
+        'hotel_id', 'expense_type_id', 'employee_id', 'paid_to', 'payment_method',
+        'description', 'amount_cents', 'incurred_on', 'paid_on', 'status',
+        'created_by_name', 'notes',
     ];
 
     protected $casts = [

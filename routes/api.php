@@ -8,12 +8,14 @@ use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\EmployeeController;
 use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\ExpenseTypeController;
-use App\Http\Controllers\Api\V1\GuestAuthController;
 use App\Http\Controllers\Api\V1\GuestController;
 use App\Http\Controllers\Api\V1\HotelController;
+use App\Http\Controllers\Api\V1\HotelBillingController;
 use App\Http\Controllers\Api\V1\InvitationController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PlatformAdminController;
+use App\Http\Controllers\Api\V1\PromotionController;
+use App\Http\Controllers\Api\V1\CountryTaxRateController;
 use App\Http\Controllers\Api\V1\PublicHotelController;
 use App\Http\Controllers\Api\V1\RatePlanController;
 use App\Http\Controllers\Api\V1\ReportController;
@@ -21,6 +23,8 @@ use App\Http\Controllers\Api\V1\ReviewController;
 use App\Http\Controllers\Api\V1\RoomController;
 use App\Http\Controllers\Api\V1\RoomTypeController;
 use App\Http\Controllers\Api\V1\TeamController;
+use App\Http\Controllers\Api\V1\SubscriptionPlanController;
+use App\Http\Controllers\Api\V1\SubscriptionController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -48,6 +52,7 @@ Route::prefix('v1')->group(function () {
 
     Route::get('/hotels/search', [PublicHotelController::class, 'search']);
     Route::get('/hotels/cities', [PublicHotelController::class, 'cities']);
+    Route::get('/hotels/promotions', [PublicHotelController::class, 'promotions']);
     Route::get('/hotels/{hotel}/public', [PublicHotelController::class, 'show'])->where('hotel', '[a-z0-9-]+');
     Route::get('/hotels/{hotel}/public/availability', [PublicHotelController::class, 'availability'])->where('hotel', '[a-z0-9-]+');
     Route::post('/hotels/{hotel}/public/bookings', [PublicHotelController::class, 'storeBooking'])->where('hotel', '[a-z0-9-]+');
@@ -56,13 +61,9 @@ Route::prefix('v1')->group(function () {
     // Public corporate contact info for the registration ("under review") screen.
     Route::get('/platform/support', [PlatformAdminController::class, 'support']);
 
-    /* ---------------------- Guest self-service ------------------------- */
-    // Guests log in with email + password to view their own reservations.
-    // These live OUTSIDE the `tenant` middleware because a guest record may be
-    // found across multiple hotels and `TokenAbilities` scopes staff tokens.
-    Route::post('/guests/login', [GuestAuthController::class, 'login']);
-    Route::get('/guests/me', [GuestAuthController::class, 'me'])->middleware('auth:sanctum');
-    Route::get('/guests/me/bookings', [GuestAuthController::class, 'myBookings'])->middleware('auth:sanctum');
+    // No guest self-service auth exists anymore. Guests are only created and
+    // looked up as booking data; the public guest portal lets a visitor make a
+    // new reservation without any account or token.
 
     /* ------------------------ Platform administration ------------------- */
 
@@ -85,11 +86,36 @@ Route::prefix('v1')->group(function () {
         Route::get('/hotels/{hotel}/users', [PlatformAdminController::class, 'users']);
         Route::post('/hotels/{hotel}/users', [PlatformAdminController::class, 'storeUser']);
         Route::put('/hotels/{hotel}/users/{user}', [PlatformAdminController::class, 'updateUser']);
+        Route::get('/hotels/{hotel}/guests', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'index']);
+        Route::get('/hotels/{hotel}/guests/{guest}', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'show']);
+        Route::put('/hotels/{hotel}/guests/{guest}', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'update']);
+        Route::get('/guests', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'all']);
+        Route::put('/guests/{guest}', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'update']);
         Route::post('/hotels/{hotel}/approve', [PlatformAdminController::class, 'approve']);
         Route::post('/hotels/{hotel}/reject', [PlatformAdminController::class, 'reject']);
         Route::post('/hotels/{hotel}/suspend', [PlatformAdminController::class, 'suspend']);
         Route::get('/settings', [PlatformAdminController::class, 'settings']);
         Route::put('/settings', [PlatformAdminController::class, 'updateSettings']);
+
+        // Subscription plans & hotel assignment.
+        Route::apiResource('plans', SubscriptionPlanController::class)->except(['edit', 'create']);
+
+        // Hotel promotions (platform-managed, billed to the hotel).
+        Route::apiResource('promotions', PromotionController::class)->except(['edit', 'create']);
+
+        // Platform-managed default tax (VAT) per country — PURE fallback used
+        // only when a hotel leaves its own tax_rate at 0.
+        Route::apiResource('country-tax-rates', CountryTaxRateController::class)->except(['edit', 'create']);
+        Route::get('subscriptions', [SubscriptionController::class, 'index']);
+        Route::get('subscriptions/invoices', [SubscriptionController::class, 'invoicesIndex']);
+        Route::get('subscriptions/{hotel}', [SubscriptionController::class, 'show']);
+        Route::post('subscriptions/{hotel}/assign', [SubscriptionController::class, 'assign']);
+        Route::put('subscriptions/{hotel}', [SubscriptionController::class, 'update']);
+        Route::post('subscriptions/{hotel}/deactivate', [SubscriptionController::class, 'deactivate']);
+        Route::post('subscriptions/{hotel}/reactivate', [SubscriptionController::class, 'reactivate']);
+        Route::get('subscriptions/{hotel}/invoices', [SubscriptionController::class, 'invoices']);
+        Route::post('subscriptions/{hotel}/invoices/{invoice}/mark-paid', [SubscriptionController::class, 'markPaid']);
+        Route::post('subscriptions/{hotel}/wallet-credit', [SubscriptionController::class, 'creditWallet']);
     });
 
     /* --------------------------- Authenticated ------------------------ */
@@ -104,6 +130,9 @@ Route::prefix('v1')->group(function () {
         // Tenant settings.
         Route::get('/hotel', [HotelController::class, 'show'])->middleware('permission:hotels.view');
         Route::put('/hotel', [HotelController::class, 'update'])->middleware('permission:hotels.update');
+
+        // Hotel billing view (bills due to the platform).
+        Route::get('/billing', [HotelBillingController::class, 'index'])->middleware('permission:payments.view');
 
         // Team management.
         Route::get('/team', [TeamController::class, 'index']);
@@ -153,6 +182,7 @@ Route::prefix('v1')->group(function () {
         Route::get('reports/kpis', [ReportController::class, 'kpis']);
         Route::get('reports/occupancy', [ReportController::class, 'occupancy']);
         Route::get('reports/revenue', [ReportController::class, 'revenue']);
+        Route::get('reports/profit-loss', [ReportController::class, 'profitLoss']);
         Route::get('reports/export', [ReportController::class, 'export']);
 
         Route::get('dashboard', [DashboardController::class, 'summary']);

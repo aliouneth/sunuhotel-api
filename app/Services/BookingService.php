@@ -6,6 +6,7 @@ use App\Exceptions\BookingConflictException;
 use App\Exceptions\ValidationException as DomainValidationException;
 use App\Models\Booking;
 use App\Models\BookingRoom;
+use App\Models\CountryTaxRate;
 use App\Models\Guest;
 use App\Models\Hotel;
 use App\Models\Room;
@@ -93,9 +94,17 @@ final class BookingService
                     $room = Room::query()->findOrFail($line['room_id']);
                     $nights = $checkIn->diffInDays($checkOut);
 
-                    // Rooms with an explicit daily rate are priced flat; others
-                    // fall back to the rate plan snapshot.
-                    if ($room->daily_rate_cents !== null) {
+                    // Website reservations honour the running promotion for the
+                    // room type, matching the rate quoted on the public pages.
+                    $promo = ($payload['source'] ?? null) === 'website'
+                        ? \App\Models\Promotion::runningByTypeForHotel($hotel->id)->get($room->room_type_id)
+                        : null;
+
+                    if ($promo) {
+                        $nightly = (int) $promo->promo_rate_cents;
+                        $lineTotal = $nights * $nightly;
+                        $planId = null;
+                    } elseif ($room->daily_rate_cents !== null) {
                         $nightly = (int) $room->daily_rate_cents;
                         $lineTotal = $nights * $nightly;
                         $planId = null;
@@ -394,10 +403,6 @@ final class BookingService
             ? mb_strtolower(trim((string) $data['email']))
             : null;
 
-        $password = ! empty($data['password'])
-            ? (string) $data['password']
-            : null;
-
         if ($email) {
             $existing = Guest::query()
                 ->where('hotel_id', $hotel->id)
@@ -406,13 +411,6 @@ final class BookingService
                 ->first();
 
             if ($existing) {
-                // First-time password set: allow a returning guest (who already
-                // holds a record from a prior booking) to create an account.
-                if ($password && ! $existing->password) {
-                    $existing->password = $password;
-                    $existing->save();
-                }
-
                 return $existing;
             }
         }
@@ -426,7 +424,6 @@ final class BookingService
             'nationality' => $data['nationality'] ?? null,
             'notes' => $data['notes'] ?? null,
             'created_by' => $actor?->id,
-            'password' => $password,
         ]);
 
         return $guest;
@@ -511,8 +508,9 @@ final class BookingService
     {
         // If any line uses a tax-included plan, we keep tax simple: apply the
         // hotel default tax only to the untaxed portion. MVP keeps it strict:
-        // all-or-nothing per hotel.
-        return (int) round($subtotal * ($hotel->tax_rate / 100));
+        // all-or-nothing per hotel. A hotel's own tax_rate always wins; only
+        // when it is 0 do we fall back to the platform country tax rate.
+        return (int) round($subtotal * (CountryTaxRate::effectiveRateForHotel($hotel) / 100));
     }
 
     private function assertStatus(Booking $booking, array $allowed): void

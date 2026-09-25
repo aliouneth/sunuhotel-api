@@ -83,7 +83,7 @@ class RatePlanController extends Controller
             ->diffInDays(\Illuminate\Support\Carbon::parse($validated['check_out']));
 
         $hotel = $request->user()->hotel;
-        $tax = (int) round($this->rates->stayTotalCents($ratePlan, $validated['check_in'], $validated['check_out']) * ($hotel->tax_rate / 100));
+        $tax = (int) round($this->rates->stayTotalCents($ratePlan, $validated['check_in'], $validated['check_out']) * (\App\Models\CountryTaxRate::effectiveRateForHotel($hotel) / 100));
 
         return response()->json([
             'data' => [
@@ -96,6 +96,7 @@ class RatePlanController extends Controller
                     $validated['check_out']
                 )->values(),
                 'subtotal_cents' => $this->rates->stayTotalCents($ratePlan, $validated['check_in'], $validated['check_out']),
+                'tax_rate' => CountryTaxRate::effectiveRateForHotel($hotel),
                 'tax_cents' => $tax,
                 'total_cents' => $this->rates->stayTotalCents($ratePlan, $validated['check_in'], $validated['check_out']) + $tax,
             ],

@@ -25,12 +25,13 @@ class Hotel extends Model
         'uuid', 'slug', 'stars', 'name', 'legal_name', 'address', 'city', 'country',
         'phone', 'email', 'website', 'timezone', 'currency', 'tax_rate',
         'check_in_time', 'check_out_time', 'logo_path', 'settings', 'status',
-        'trial_ends_at', 'created_by',
+        'trial_ends_at', 'created_by', 'wallet_balance_cents',
     ];
 
     protected $casts = [
         'settings' => 'array',
         'tax_rate' => 'float',
+        'wallet_balance_cents' => 'integer',
         'trial_ends_at' => 'datetime',
         'check_in_time' => 'datetime:H:i',
         'check_out_time' => 'datetime:H:i',
@@ -100,6 +101,28 @@ class Hotel extends Model
     public function users()
     {
         return $this->hasMany(User::class);
+    }
+
+    public function subscriptions()
+    {
+        return $this->hasMany(HotelSubscription::class)->latest('effective_from');
+    }
+
+    public function monthlyInvoices()
+    {
+        return $this->hasMany(MonthlyInvoice::class)->orderBy('billing_month');
+    }
+
+    /**
+     * The subscription currently in force (active and not yet ended).
+     */
+    public function activeSubscription(): ?HotelSubscription
+    {
+        return $this->subscriptions()
+            ->where('status', HotelSubscription::STATUS_ACTIVE)
+            ->whereNotNull('effective_from')
+            ->where(fn ($q) => $q->whereNull('effective_to')->orWhere('effective_to', '>=', today()))
+            ->first();
     }
 
     public function roomTypes()
