@@ -2,9 +2,10 @@
 
 namespace App\Providers;
 
+use App\Services\HotelImport\HotelExcelReader;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -13,7 +14,12 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // The reader takes its row budget from config, so it cannot be resolved
+        // by the container's constructor injection alone.
+        $this->app->singleton(HotelExcelReader::class, fn (): HotelExcelReader => new HotelExcelReader(
+            (int) config('hotel_import.max_rows', 20000),
+            (int) config('hotel_import.preview_rows', 8),
+        ));
     }
 
     /**

@@ -18,12 +18,19 @@ class Hotel extends Model
 
     public const STATUSES = ['pending', 'active', 'suspended', 'rejected', 'trial'];
 
+    /** Awaiting platform review (self-service registrations and Excel imports). */
+    public const STATUS_PENDING = 'pending';
+
+    /** Approved and publicly bookable. */
+    public const STATUS_ACTIVE = 'active';
+
     /** Slug of the seeded reference hotel whose catalogue new tenants inherit. */
     public const SAMPLE_HOTEL_SLUG = 'sunuhotel-dakar';
 
     protected $fillable = [
         'uuid', 'slug', 'stars', 'name', 'legal_name', 'address', 'city', 'country',
-        'phone', 'email', 'website', 'timezone', 'currency', 'tax_rate',
+        'phone', 'phone_2', 'email', 'website', 'description', 'comment', 'other_services',
+        'timezone', 'currency', 'tax_rate',
         'check_in_time', 'check_out_time', 'logo_path', 'settings', 'status',
         'trial_ends_at', 'created_by', 'wallet_balance_cents',
     ];

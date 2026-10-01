@@ -1,30 +1,33 @@
 <?php
 
-use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\AmenityController;
+use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BookingAvailabilityController;
 use App\Http\Controllers\Api\V1\BookingController;
+use App\Http\Controllers\Api\V1\CountryTaxRateController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\EmployeeController;
 use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\ExpenseTypeController;
 use App\Http\Controllers\Api\V1\GuestController;
-use App\Http\Controllers\Api\V1\HotelController;
 use App\Http\Controllers\Api\V1\HotelBillingController;
+use App\Http\Controllers\Api\V1\HotelController;
 use App\Http\Controllers\Api\V1\InvitationController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PlatformAdminController;
+use App\Http\Controllers\Api\V1\PlatformGuestController;
+use App\Http\Controllers\Api\V1\PlatformHotelImportController;
+use App\Http\Controllers\Api\V1\PlatformUserController;
 use App\Http\Controllers\Api\V1\PromotionController;
-use App\Http\Controllers\Api\V1\CountryTaxRateController;
 use App\Http\Controllers\Api\V1\PublicHotelController;
 use App\Http\Controllers\Api\V1\RatePlanController;
 use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\ReviewController;
 use App\Http\Controllers\Api\V1\RoomController;
 use App\Http\Controllers\Api\V1\RoomTypeController;
-use App\Http\Controllers\Api\V1\TeamController;
-use App\Http\Controllers\Api\V1\SubscriptionPlanController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
+use App\Http\Controllers\Api\V1\SubscriptionPlanController;
+use App\Http\Controllers\Api\V1\TeamController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -70,6 +73,7 @@ Route::prefix('v1')->group(function () {
     Route::middleware(['auth:sanctum', 'platform.admin'])->prefix('platform')->group(function () {
         Route::get('/summary', [PlatformAdminController::class, 'summary']);
         Route::get('/hotels', [PlatformAdminController::class, 'hotels']);
+        Route::post('/hotels', [PlatformAdminController::class, 'storeHotel']);
         Route::get('/hotels/{hotel}', [PlatformAdminController::class, 'show']);
         Route::put('/hotels/{hotel}', [PlatformAdminController::class, 'update']);
         Route::get('/hotels/{hotel}/rooms', [PlatformAdminController::class, 'rooms']);
@@ -86,11 +90,24 @@ Route::prefix('v1')->group(function () {
         Route::get('/hotels/{hotel}/users', [PlatformAdminController::class, 'users']);
         Route::post('/hotels/{hotel}/users', [PlatformAdminController::class, 'storeUser']);
         Route::put('/hotels/{hotel}/users/{user}', [PlatformAdminController::class, 'updateUser']);
-        Route::get('/hotels/{hotel}/guests', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'index']);
-        Route::get('/hotels/{hotel}/guests/{guest}', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'show']);
-        Route::put('/hotels/{hotel}/guests/{guest}', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'update']);
-        Route::get('/guests', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'all']);
-        Route::put('/guests/{guest}', [\App\Http\Controllers\Api\V1\PlatformGuestController::class, 'update']);
+        Route::get('/hotels/{hotel}/guests', [PlatformGuestController::class, 'index']);
+        Route::get('/hotels/{hotel}/guests/{guest}', [PlatformGuestController::class, 'show']);
+        Route::put('/hotels/{hotel}/guests/{guest}', [PlatformGuestController::class, 'update']);
+        Route::get('/guests', [PlatformGuestController::class, 'all']);
+        Route::put('/guests/{guest}', [PlatformGuestController::class, 'update']);
+        // Platform-wide USER (staff) directory across every hotel.
+        Route::get('/users', [PlatformUserController::class, 'index']);
+        Route::post('/users', [PlatformUserController::class, 'store']);
+        Route::put('/users/{user}', [PlatformUserController::class, 'update']);
+
+        // Hotel Excel import (upload -> detect columns -> map -> import).
+        // Deliberately NOT nested under /hotels/{hotel}: the target records are
+        // new tenants created by the import itself.
+        Route::get('/hotel-imports', [PlatformHotelImportController::class, 'index']);
+        Route::post('/hotel-imports/upload', [PlatformHotelImportController::class, 'upload']);
+        Route::post('/hotel-imports/run', [PlatformHotelImportController::class, 'run']);
+        Route::get('/hotel-imports/template', [PlatformHotelImportController::class, 'template']);
+        Route::get('/hotel-imports/{hotelImport}', [PlatformHotelImportController::class, 'show']);
         Route::post('/hotels/{hotel}/approve', [PlatformAdminController::class, 'approve']);
         Route::post('/hotels/{hotel}/reject', [PlatformAdminController::class, 'reject']);
         Route::post('/hotels/{hotel}/suspend', [PlatformAdminController::class, 'suspend']);

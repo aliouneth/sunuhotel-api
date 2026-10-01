@@ -6,14 +6,15 @@ use App\Http\Controllers\Controller;
 use App\Models\Hotel;
 use App\Models\HotelImage;
 use App\Models\PlatformSettings;
+use App\Models\Review;
 use App\Models\Role;
 use App\Models\Room;
 use App\Models\RoomType;
-use App\Models\Review;
 use App\Models\User;
 use App\Services\AuditLogger;
 use App\Support\Tenancy\HotelScope;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Spatie\Permission\PermissionRegistrar;
 
@@ -40,8 +41,8 @@ class PlatformAdminController extends Controller
         }
 
         return response()->json([
-            'data' => [                'hotels' => array_sum($counts),
-                'users' => (int) \App\Models\User::query()->whereNotNull('hotel_id')->count(),
+            'data' => ['hotels' => array_sum($counts),
+                'users' => (int) User::query()->whereNotNull('hotel_id')->count(),
                 'pending' => $counts['pending'],
                 'by_status' => $counts,
             ],
@@ -80,6 +81,125 @@ class PlatformAdminController extends Controller
         return response()->json(['data' => $this->present($hotel)]);
     }
 
+    /**
+     * Create a hotel on behalf of the platform, with its full set of details.
+     *
+     * Unlike self-service registration (which forces status=pending and only
+     * accepts a name), an administrator can supply every descriptive, contact
+     * and operational field in one call, including logo and photos.
+     */
+    public function storeHotel(Request $request)
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'legal_name' => ['nullable', 'string', 'max:160'],
+            'slug' => ['nullable', 'string', 'max:60', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/', 'unique:hotels,slug'],
+            'address' => ['nullable', 'string', 'max:255'],
+            'city' => ['nullable', 'string', 'max:120'],
+            'country' => ['nullable', 'string', 'max:2'],
+            'phone' => ['nullable', 'string', 'max:40'],
+            'phone_2' => ['nullable', 'string', 'max:40'],
+            'email' => ['nullable', 'email', 'max:191'],
+            'website' => ['nullable', 'url', 'max:191'],
+            'description' => ['nullable', 'string', 'max:5000'],
+            'comment' => ['nullable', 'string', 'max:5000'],
+            'other_services' => ['nullable', 'string', 'max:5000'],
+            'currency' => ['sometimes', 'string', 'size:3'],
+            'timezone' => ['sometimes', 'string', 'max:64', 'timezone'],
+            'tax_rate' => ['sometimes', 'numeric', 'between:0,100'],
+            'check_in_time' => ['sometimes', 'string', 'date_format:H:i'],
+            'check_out_time' => ['sometimes', 'string', 'date_format:H:i'],
+            'stars' => ['nullable', 'integer', 'between:1,5'],
+            'status' => ['sometimes', 'string', Rule::in(Hotel::STATUSES)],
+            'locale' => ['sometimes', 'string', 'in:fr,en'],
+            'logo' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
+            'images' => ['nullable', 'array', 'max:5'],
+            'images.*' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
+        ]);
+
+        $slug = trim((string) ($validated['slug'] ?? ''));
+        if ($slug === '') {
+            $slug = $this->uniqueHotelSlug($validated['name']);
+        }
+
+        $hotel = new Hotel;
+        $hotel->name = $validated['name'];
+        $hotel->slug = $slug;
+
+        foreach ([
+            'legal_name', 'address', 'city', 'country', 'phone', 'phone_2',
+            'email', 'website', 'description', 'comment', 'other_services', 'stars',
+        ] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $hotel->{$field} = $validated[$field];
+            }
+        }
+
+        if (array_key_exists('currency', $validated)) {
+            $hotel->currency = strtoupper($validated['currency']);
+        }
+        if (array_key_exists('timezone', $validated)) {
+            $hotel->timezone = $validated['timezone'];
+        }
+        if (array_key_exists('tax_rate', $validated)) {
+            $hotel->tax_rate = (float) $validated['tax_rate'];
+        }
+        if (array_key_exists('check_in_time', $validated)) {
+            $hotel->check_in_time = $validated['check_in_time'];
+        }
+        if (array_key_exists('check_out_time', $validated)) {
+            $hotel->check_out_time = $validated['check_out_time'];
+        }
+        // An administrator creating a hotel is an explicit activation decision,
+        // so default to active rather than the self-service "pending" review.
+        $hotel->status = $validated['status'] ?? 'active';
+        $hotel->settings = ['locale' => $validated['locale'] ?? 'en'];
+        $hotel->created_by = auth('sanctum')->id();
+        $hotel->save();
+
+        if ($request->hasFile('logo')) {
+            $hotel->setLogo($request->file('logo'));
+        }
+
+        if ($request->hasFile('images')) {
+            $sort = 0;
+            foreach ($request->file('images') as $file) {
+                $img = new HotelImage;
+                $img->setImage($file, $hotel->id, $sort++);
+            }
+        }
+
+        AuditLogger::critical($hotel, 'tenant.created', [
+            'by' => auth('sanctum')->user()->email,
+            'slug' => $hotel->slug,
+        ]);
+
+        return response()->json([
+            'message' => 'Hotel created.',
+            'data' => $this->present($hotel->fresh()),
+        ], 201);
+    }
+
+    /**
+     * Derive a unique slug from the hotel name, mirroring registration's
+     * "name + short random suffix" fallback so collisions never 500.
+     */
+    private function uniqueHotelSlug(string $name): string
+    {
+        $base = Str::slug($name);
+
+        if ($base === '') {
+            $base = 'hotel';
+        }
+
+        $slug = $base;
+        while (Hotel::withTrashed()->where('slug', $slug)->exists()) {
+            $slug = $base.'-'.Str::lower(Str::random(4));
+        }
+
+        return $slug;
+    }
+
     public function update(Request $request, Hotel $hotel)
     {
         $validated = $request->validate([
@@ -93,13 +213,20 @@ class PlatformAdminController extends Controller
             'city' => ['sometimes', 'nullable', 'string', 'max:120'],
             'country' => ['sometimes', 'nullable', 'string', 'max:2'],
             'phone' => ['sometimes', 'nullable', 'string', 'max:40'],
+            'phone_2' => ['sometimes', 'nullable', 'string', 'max:40'],
             'email' => ['sometimes', 'nullable', 'email', 'max:191'],
             'website' => ['sometimes', 'nullable', 'url', 'max:191'],
+            'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
+            'comment' => ['sometimes', 'nullable', 'string', 'max:5000'],
+            'other_services' => ['sometimes', 'nullable', 'string', 'max:5000'],
             'currency' => ['sometimes', 'string', 'size:3'],
             'timezone' => ['sometimes', 'string', 'max:64', 'timezone'],
-  'status' => ['sometimes', 'string', Rule::in(Hotel::STATUSES)],
-  'stars' => ['sometimes', 'nullable', 'integer', 'between:1,5'],
-  'locale' => ['sometimes', 'string', 'in:fr,en'],
+            'tax_rate' => ['sometimes', 'numeric', 'between:0,100'],
+            'check_in_time' => ['sometimes', 'string', 'date_format:H:i'],
+            'check_out_time' => ['sometimes', 'string', 'date_format:H:i'],
+            'status' => ['sometimes', 'string', Rule::in(Hotel::STATUSES)],
+            'stars' => ['sometimes', 'nullable', 'integer', 'between:1,5'],
+            'locale' => ['sometimes', 'string', 'in:fr,en'],
             'logo' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
             'images' => ['nullable', 'array', 'max:5'],
             'images.*' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
@@ -108,8 +235,10 @@ class PlatformAdminController extends Controller
         ]);
 
         $update = collect($validated)->only([
-        'name', 'legal_name', 'slug', 'address', 'city', 'country',
-        'phone', 'email', 'website', 'currency', 'timezone', 'status', 'stars',
+            'name', 'legal_name', 'slug', 'address', 'city', 'country',
+            'phone', 'phone_2', 'email', 'website', 'description', 'comment',
+            'other_services', 'currency', 'timezone', 'status', 'stars',
+            'tax_rate', 'check_in_time', 'check_out_time',
         ])->all();
 
         if (($validated['slug'] ?? null) === null) {
@@ -134,12 +263,14 @@ class PlatformAdminController extends Controller
         if ($request->hasFile('images')) {
             foreach ($hotel->hotelImages as $img) {
                 $old = public_path(ltrim($img->image_path, '/'));
-                if (is_file($old)) { unlink($old); }
+                if (is_file($old)) {
+                    unlink($old);
+                }
             }
             $hotel->hotelImages()->delete();
             $sort = 0;
             foreach ($request->file('images') as $file) {
-                $img = new HotelImage();
+                $img = new HotelImage;
                 $img->setImage($file, $hotel->id, $sort++);
             }
         }
@@ -149,7 +280,9 @@ class PlatformAdminController extends Controller
                 $img = $hotel->hotelImages()->find($imgId);
                 if ($img) {
                     $old = public_path(ltrim($img->image_path, '/'));
-                    if (is_file($old)) { unlink($old); }
+                    if (is_file($old)) {
+                        unlink($old);
+                    }
                     $img->delete();
                 }
             }
@@ -289,7 +422,7 @@ class PlatformAdminController extends Controller
         ]);
 
         $roomType = $hotel->roomTypes()->create([
-            'slug' => \Illuminate\Support\Str::slug($validated['name']),
+            'slug' => Str::slug($validated['name']),
             'name' => $validated['name'],
             'description' => $validated['description'] ?? null,
             'base_capacity' => $validated['base_capacity'] ?? 2,
@@ -333,6 +466,7 @@ class PlatformAdminController extends Controller
         foreach ($source->roomTypes()->withoutGlobalScope(HotelScope::class)->orderBy('name')->get() as $type) {
             if (in_array(mb_strtolower($type->name), $existing, true)) {
                 $skipped++;
+
                 continue;
             }
 
@@ -376,7 +510,7 @@ class PlatformAdminController extends Controller
         ]);
 
         if (isset($validated['name'])) {
-            $validated['slug'] = \Illuminate\Support\Str::slug($validated['name']);
+            $validated['slug'] = Str::slug($validated['name']);
         }
 
         $roomType->update($validated);
@@ -563,21 +697,28 @@ class PlatformAdminController extends Controller
     {
         $owner = $hotel->users()->orderBy('id')->first();
 
-    return [
-        'id' => $hotel->id,
-        'uuid' => $hotel->uuid,
-        'slug' => $hotel->slug,
-        'stars' => $hotel->stars,
-        'name' => $hotel->name,
+        return [
+            'id' => $hotel->id,
+            'uuid' => $hotel->uuid,
+            'slug' => $hotel->slug,
+            'stars' => $hotel->stars,
+            'name' => $hotel->name,
             'legal_name' => $hotel->legal_name,
             'address' => $hotel->address,
             'city' => $hotel->city,
             'country' => $hotel->country,
             'phone' => $hotel->phone,
+            'phone_2' => $hotel->phone_2,
             'email' => $hotel->email,
             'website' => $hotel->website,
+            'description' => $hotel->description,
+            'comment' => $hotel->comment,
+            'other_services' => $hotel->other_services,
             'currency' => $hotel->currency,
             'timezone' => $hotel->timezone,
+            'tax_rate' => (float) $hotel->tax_rate,
+            'check_in_time' => $hotel->check_in_time?->format('H:i'),
+            'check_out_time' => $hotel->check_out_time?->format('H:i'),
             'status' => $hotel->status,
             'logo_url' => $hotel->logo_url,
             'locale' => $hotel->settings['locale'] ?? null,
