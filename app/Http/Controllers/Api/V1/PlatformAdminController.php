@@ -54,22 +54,40 @@ class PlatformAdminController extends Controller
         $validated = $request->validate([
             'status' => ['sometimes', 'string', 'in:pending,active,suspended,rejected,trial'],
             'search' => ['sometimes', 'string', 'max:120'],
+            // "name" narrows `search` to the hotel name alone; the default
+            // matches name, slug, city or the owner's email.
+            'search_field' => ['sometimes', 'string', 'in:all,name'],
+            'sort' => ['sometimes', 'string', 'in:status,name,name_desc'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ]);
+
+        $sort = $validated['sort'] ?? 'status';
+        $searchField = $validated['search_field'] ?? 'all';
 
         $hotels = Hotel::query()
             ->withCount(['users', 'rooms', 'bookings'])
             ->when($validated['status'] ?? null, fn ($q, $status) => $q->where('status', $status))
-            ->when($validated['search'] ?? null, function ($q, $search) {
-                $q->where(function ($q) use ($search) {
+            ->when($validated['search'] ?? null, function ($q, $search) use ($searchField) {
+                $q->where(function ($q) use ($search, $searchField) {
+                    if ($searchField === 'name') {
+                        $q->where('name', 'like', "%{$search}%");
+
+                        return;
+                    }
+
                     $q->where('name', 'like', "%{$search}%")
                         ->orWhere('slug', 'like', "%{$search}%")
                         ->orWhere('city', 'like', "%{$search}%")
                         ->orWhereHas('users', fn ($q) => $q->where('email', 'like', "%{$search}%"));
                 });
             })
-            ->orderByRaw("case status when 'pending' then 0 else 1 end")
-            ->orderBy('id', 'desc')
+            // Name ordering always carries an id tiebreak: hotel names are not
+            // unique, and paginate() needs a total order to stay stable.
+            ->when($sort === 'name', fn ($q) => $q->orderBy('name')->orderBy('id'))
+            ->when($sort === 'name_desc', fn ($q) => $q->orderByDesc('name')->orderBy('id'))
+            ->when($sort === 'status', fn ($q) => $q
+                ->orderByRaw("case status when 'pending' then 0 else 1 end")
+                ->orderBy('id', 'desc'))
             ->paginate($validated['per_page'] ?? 25)
             ->through(fn (Hotel $hotel) => $this->present($hotel));
 

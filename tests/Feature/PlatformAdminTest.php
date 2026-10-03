@@ -12,6 +12,7 @@ use App\Models\RoomType;
 use App\Models\User;
 use App\Support\Tenancy\HotelContext;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
 use Spatie\Permission\PermissionRegistrar;
 use Tests\TestCase;
 
@@ -162,6 +163,112 @@ class PlatformAdminTest extends TestCase
             ->assertOk();
 
         $this->getJson("/api/v1/hotels/{$pendingHotel->slug}/public")->assertOk();
+    }
+
+    public function test_hotel_listing_can_be_ordered_alphabetically_by_name(): void
+    {
+        Hotel::factory()->create(['name' => 'Zanzibar Lodge', 'status' => 'active']);
+        Hotel::factory()->create(['name' => 'Aitour Lodge', 'status' => 'active']);
+        Hotel::factory()->create(['name' => 'Mbank Lodge', 'status' => 'active']);
+        $admin = User::factory()->platformAdmin()->create();
+        HotelContext::clear();
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?sort=name')
+            ->assertOk()
+            ->assertJsonPath('data.total', 3)
+            ->assertJsonPath('data.data.0.name', 'Aitour Lodge')
+            ->assertJsonPath('data.data.1.name', 'Mbank Lodge')
+            ->assertJsonPath('data.data.2.name', 'Zanzibar Lodge');
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?sort=name_desc')
+            ->assertOk()
+            ->assertJsonPath('data.data.0.name', 'Zanzibar Lodge')
+            ->assertJsonPath('data.data.2.name', 'Aitour Lodge');
+
+        // Without the parameter the default ordering is unchanged: pending
+        // hotels float to the top, otherwise newest id first.
+        Hotel::factory()->create(['name' => 'Afara Lodge', 'status' => 'pending']);
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels')
+            ->assertOk()
+            ->assertJsonPath('data.data.0.name', 'Afara Lodge')
+            ->assertJsonPath('data.data.3.name', 'Zanzibar Lodge');
+    }
+
+    public function test_alphabetical_ordering_is_stable_across_pages(): void
+    {
+        // Two hotels share a name, which is allowed by the schema. Without an
+        // id tiebreak the row could repeat or vanish between pages.
+        Hotel::factory()->create(['name' => 'Twin Lodge', 'status' => 'active']);
+        Hotel::factory()->create(['name' => 'Twin Lodge', 'status' => 'active']);
+        Hotel::factory()->create(['name' => 'Alpha Lodge', 'status' => 'active']);
+        $admin = User::factory()->platformAdmin()->create();
+        HotelContext::clear();
+
+        $first = $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?sort=name&per_page=1&page=2')
+            ->assertOk()
+            ->assertJsonPath('data.total', 3)
+            ->json('data.data.0');
+
+        $second = $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?sort=name&per_page=1&page=2')
+            ->assertOk()
+            ->json('data.data.0');
+
+        $this->assertSame($first['id'], $second['id']);
+    }
+
+    public function test_hotel_listing_search_can_be_limited_to_the_name(): void
+    {
+        $named = Hotel::factory()->create(['name' => 'Dakar Riverside', 'city' => 'Saint-Louis', 'status' => 'active']);
+        Hotel::factory()->create(['name' => 'Inland Lodge', 'city' => 'Dakar', 'status' => 'active']);
+        $admin = User::factory()->platformAdmin()->create();
+        HotelContext::clear();
+
+        // search_field=name matches the hotel name only, so the hotel that is
+        // merely located in Dakar is left out.
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?search=Dakar&search_field=name')
+            ->assertOk()
+            ->assertJsonPath('data.total', 1)
+            ->assertJsonPath('data.data.0.id', $named->id);
+
+        // The default still spans name, slug and city.
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?search=Dakar')
+            ->assertOk()
+            ->assertJsonPath('data.total', 2);
+
+        // Searching and sorting compose, and an unmatched term returns nothing.
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?search=Dakar&search_field=name&sort=name_desc')
+            ->assertOk()
+            ->assertJsonPath('data.data.0.name', 'Dakar Riverside');
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?search=zzzznothing&search_field=name')
+            ->assertOk()
+            ->assertJsonPath('data.total', 0)
+            ->assertJsonPath('data.data', []);
+    }
+
+    public function test_hotel_listing_rejects_an_unknown_sort_or_search_field(): void
+    {
+        $admin = User::factory()->platformAdmin()->create();
+        HotelContext::clear();
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?sort=rooms')
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('sort');
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/v1/platform/hotels?search_field=owner')
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('search_field');
     }
 
     public function test_public_search_finds_all_active_hotels_with_word_in_name_only(): void
@@ -358,7 +465,7 @@ class PlatformAdminTest extends TestCase
             ->post("/api/v1/platform/hotels/{$hotel->id}", [
                 '_method' => 'PUT',
                 'name' => 'Logo Resort',
-                'logo' => \Illuminate\Http\UploadedFile::fake()->image('logo.png', 195, 140),
+                'logo' => UploadedFile::fake()->image('logo.png', 195, 140),
             ])
             ->assertOk()
             ->assertJsonPath('data.name', 'Logo Resort')
@@ -377,7 +484,7 @@ class PlatformAdminTest extends TestCase
         [$hotel, $owner] = $this->pendingTenant();
         $hotel->update(['status' => 'active']);
 
-        $logo = \Illuminate\Http\UploadedFile::fake()->image('logo.png', 195, 140);
+        $logo = UploadedFile::fake()->image('logo.png', 195, 140);
 
         $this->actingAs($owner, 'sanctum')
             ->post('/api/v1/hotel', [
@@ -411,8 +518,8 @@ class PlatformAdminTest extends TestCase
         HotelContext::clear();
 
         // Seed a room type owned by the hotel.
-        $roomType = \App\Models\RoomType::factory()->create(['hotel_id' => $hotel->id]);
-        \App\Models\Room::factory()->create(['hotel_id' => $hotel->id, 'room_type_id' => $roomType->id, 'room_number' => '101']);
+        $roomType = RoomType::factory()->create(['hotel_id' => $hotel->id]);
+        Room::factory()->create(['hotel_id' => $hotel->id, 'room_type_id' => $roomType->id, 'room_number' => '101']);
 
         $this->actingAs($admin, 'sanctum')
             ->getJson("/api/v1/platform/hotels/{$hotel->id}/room-types")
@@ -452,7 +559,7 @@ class PlatformAdminTest extends TestCase
             ->assertJsonPath('data.notes', 'Needs new AC');
 
         // Rooms of another hotel cannot be touched via this hotel's scope.
-        $otherRoom = \App\Models\Room::factory()->create();
+        $otherRoom = Room::factory()->create();
         $this->actingAs($admin, 'sanctum')
             ->putJson("/api/v1/platform/hotels/{$hotel->id}/rooms/{$otherRoom->id}", ['room_number' => '999'])
             ->assertNotFound();
