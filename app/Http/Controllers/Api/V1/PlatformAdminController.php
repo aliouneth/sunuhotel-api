@@ -122,14 +122,16 @@ class PlatformAdminController extends Controller
             'description' => ['nullable', 'string', 'max:5000'],
             'comment' => ['nullable', 'string', 'max:5000'],
             'other_services' => ['nullable', 'string', 'max:5000'],
-            'currency' => ['sometimes', 'string', 'size:3'],
-            'timezone' => ['sometimes', 'string', 'max:64', 'timezone'],
-            'tax_rate' => ['sometimes', 'numeric', 'between:0,100'],
-            'check_in_time' => ['sometimes', 'string', 'date_format:H:i'],
-            'check_out_time' => ['sometimes', 'string', 'date_format:H:i'],
+            // Nullable for the same reason as in update(): an emptied input must
+            // not fail validation and lose the rest of the submission.
+            'currency' => ['sometimes', 'nullable', 'string', 'size:3'],
+            'timezone' => ['sometimes', 'nullable', 'string', 'max:64', 'timezone'],
+            'tax_rate' => ['sometimes', 'nullable', 'numeric', 'between:0,100'],
+            'check_in_time' => ['sometimes', 'nullable', 'string', 'date_format:H:i'],
+            'check_out_time' => ['sometimes', 'nullable', 'string', 'date_format:H:i'],
             'stars' => ['nullable', 'integer', 'between:1,5'],
             'status' => ['sometimes', 'string', Rule::in(Hotel::STATUSES)],
-            'locale' => ['sometimes', 'string', 'in:fr,en'],
+            'locale' => ['sometimes', 'nullable', 'string', 'in:fr,en'],
             'logo' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
             'images' => ['nullable', 'array', 'max:5'],
             'images.*' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
@@ -237,14 +239,19 @@ class PlatformAdminController extends Controller
             'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
             'comment' => ['sometimes', 'nullable', 'string', 'max:5000'],
             'other_services' => ['sometimes', 'nullable', 'string', 'max:5000'],
-            'currency' => ['sometimes', 'string', 'size:3'],
-            'timezone' => ['sometimes', 'string', 'max:64', 'timezone'],
-            'tax_rate' => ['sometimes', 'numeric', 'between:0,100'],
-            'check_in_time' => ['sometimes', 'string', 'date_format:H:i'],
-            'check_out_time' => ['sometimes', 'string', 'date_format:H:i'],
+            // The next block is nullable on purpose. Laravel's
+            // ConvertEmptyStringsToNull middleware turns an emptied input into
+            // null, so without `nullable` a single cleared box would fail
+            // validation and reject the whole request - discarding every other
+            // edit the admin made in the same save.
+            'currency' => ['sometimes', 'nullable', 'string', 'size:3'],
+            'timezone' => ['sometimes', 'nullable', 'string', 'max:64', 'timezone'],
+            'tax_rate' => ['sometimes', 'nullable', 'numeric', 'between:0,100'],
+            'check_in_time' => ['sometimes', 'nullable', 'string', 'date_format:H:i'],
+            'check_out_time' => ['sometimes', 'nullable', 'string', 'date_format:H:i'],
             'status' => ['sometimes', 'string', Rule::in(Hotel::STATUSES)],
             'stars' => ['sometimes', 'nullable', 'integer', 'between:1,5'],
-            'locale' => ['sometimes', 'string', 'in:fr,en'],
+            'locale' => ['sometimes', 'nullable', 'string', 'in:fr,en'],
             'logo' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
             'images' => ['nullable', 'array', 'max:5'],
             'images.*' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
@@ -265,6 +272,17 @@ class PlatformAdminController extends Controller
 
         if (isset($validated['slug']) && trim($validated['slug']) === '') {
             unset($update['slug']);
+        }
+
+        // These columns are NOT NULL, so an emptied input (normalised to null by
+        // ConvertEmptyStringsToNull) can neither be written as null nor be
+        // silently swapped for the schema default - that would change data the
+        // admin never asked to change. Keep the stored value instead, which is
+        // what the existing empty-slug rule above already does.
+        foreach (['currency', 'timezone', 'tax_rate', 'check_in_time', 'check_out_time'] as $field) {
+            if (array_key_exists($field, $update) && $update[$field] === null) {
+                unset($update[$field]);
+            }
         }
 
         if (isset($validated['locale'])) {

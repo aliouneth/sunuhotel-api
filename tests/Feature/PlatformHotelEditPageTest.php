@@ -241,4 +241,117 @@ class PlatformHotelEditPageTest extends TestCase
 
         $this->assertSame('Original', $other->fresh()->city);
     }
+
+    /**
+     * Laravel's ConvertEmptyStringsToNull turns an emptied input into null.
+     * These rules must therefore accept null, or clearing one box rejects the
+     * whole request and throws away every other edit made in the same save.
+     */
+    public function test_clearing_an_input_does_not_discard_the_other_edits(): void
+    {
+        $admin = $this->admin();
+        $hotel = Hotel::factory()->create([
+            'city' => 'Dakar',
+            'phone' => '+221 33 800 0001',
+            'description' => 'Old description',
+            'currency' => 'XOF',
+            'tax_rate' => 17.5,
+            'check_in_time' => '13:30',
+            'check_out_time' => '10:15',
+            'timezone' => 'Africa/Dakar',
+        ]);
+        $hotel->update(['settings' => ['locale' => 'fr']]);
+
+        $this->actingAs($admin, 'sanctum')
+            ->post('/api/v1/platform/hotels/'.$hotel->id, [
+                '_method' => 'PUT',
+                'city' => 'Saint-Louis',
+                'phone' => '+221 33 999 9999',
+                'description' => 'Brand new description',
+                'locale' => 'en',
+                // The admin emptied these instead of typing a replacement.
+                'check_in_time' => '',
+                'check_out_time' => '',
+                'currency' => '',
+                'timezone' => '',
+                'tax_rate' => '',
+            ])
+            ->assertOk();
+
+        $fresh = $hotel->fresh();
+        // The real edits are saved...
+        $this->assertSame('Saint-Louis', $fresh->city);
+        $this->assertSame('+221 33 999 9999', $fresh->phone);
+        $this->assertSame('Brand new description', $fresh->description);
+        $this->assertSame('en', $fresh->settings['locale']);
+        // ...and the NOT NULL columns keep their stored value rather than being
+        // nulled or silently reset to the schema default.
+        $this->assertSame('XOF', $fresh->currency);
+        $this->assertSame('Africa/Dakar', $fresh->timezone);
+        $this->assertEquals(17.5, (float) $fresh->tax_rate);
+        $this->assertSame('13:30', $fresh->check_in_time->format('H:i'));
+        $this->assertSame('10:15', $fresh->check_out_time->format('H:i'));
+    }
+
+    public function test_every_optional_input_can_be_cleared_on_its_own(): void
+    {
+        $admin = $this->admin();
+
+        $clearable = [
+            'legal_name', 'slug', 'address', 'city', 'country', 'phone', 'phone_2',
+            'email', 'website', 'description', 'comment', 'other_services', 'stars',
+            'currency', 'timezone', 'tax_rate', 'check_in_time', 'check_out_time', 'locale',
+        ];
+
+        foreach ($clearable as $field) {
+            $hotel = Hotel::factory()->create([
+                'legal_name' => 'Probe SARL',
+                'slug' => 'probe-'.uniqid(),
+                'city' => 'Dakar',
+                'stars' => 4,
+            ]);
+            $hotel->update(['settings' => ['locale' => 'fr']]);
+
+            $this->actingAs($admin, 'sanctum')
+                ->post('/api/v1/platform/hotels/'.$hotel->id, ['_method' => 'PUT', $field => ''])
+                ->assertOk("clearing '{$field}' should be accepted");
+        }
+    }
+
+    public function test_clearing_an_input_does_not_weaken_validation(): void
+    {
+        $admin = $this->admin();
+
+        $rejected = [
+            'tax_rate' => ['999', 'tax_rate'],
+            'stars' => ['9', 'stars'],
+            'timezone' => ['Mars/Olympus', 'timezone'],
+            'locale' => ['zz', 'locale'],
+            'currency' => ['XXXX', 'currency'],
+            'email' => ['not-an-email', 'email'],
+        ];
+
+        foreach ($rejected as $field => [$bad, $errorKey]) {
+            $hotel = Hotel::factory()->create(['slug' => 'probe-'.uniqid()]);
+            $hotel->update(['settings' => ['locale' => 'fr']]);
+
+            $this->actingAs($admin, 'sanctum')
+                ->post('/api/v1/platform/hotels/'.$hotel->id, ['_method' => 'PUT', $field => $bad])
+                ->assertStatus(422)
+                ->assertJsonValidationErrors($errorKey);
+        }
+    }
+
+    public function test_the_name_is_still_required(): void
+    {
+        $admin = $this->admin();
+        $hotel = Hotel::factory()->create(['name' => 'Keep Me']);
+
+        $this->actingAs($admin, 'sanctum')
+            ->post('/api/v1/platform/hotels/'.$hotel->id, ['_method' => 'PUT', 'name' => ''])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('name');
+
+        $this->assertSame('Keep Me', $hotel->fresh()->name);
+    }
 }
