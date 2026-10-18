@@ -33,6 +33,9 @@ class AuthController extends Controller
             'hotel.country' => ['sometimes', 'string', 'max:2'],
             'hotel.currency' => ['sometimes', 'string', 'size:3'],
             'hotel.timezone' => ['sometimes', 'string', 'max:64'],
+            'hotel.has_restaurant' => ['sometimes', 'boolean'],
+            'hotel.has_spa' => ['sometimes', 'boolean'],
+            'hotel.has_leisure' => ['sometimes', 'boolean'],
             'logo' => ['nullable', 'image', 'mimes:png,jpg,jpeg,webp', 'max:2048'],
         ]);
 
@@ -46,6 +49,9 @@ class AuthController extends Controller
                 'country' => $validated['hotel']['country'] ?? null,
                 'currency' => $validated['hotel']['currency'] ?? 'USD',
                 'timezone' => $validated['hotel']['timezone'] ?? 'UTC',
+                'has_restaurant' => (bool) ($validated['hotel']['has_restaurant'] ?? false),
+                'has_spa' => (bool) ($validated['hotel']['has_spa'] ?? false),
+                'has_leisure' => (bool) ($validated['hotel']['has_leisure'] ?? false),
                 'settings' => ['locale' => $locale],
                 // New tenants must be reviewed and activated by a platform admin.
                 'status' => 'pending',

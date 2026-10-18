@@ -9,6 +9,8 @@ use App\Models\BookingRoom;
 use App\Models\CountryTaxRate;
 use App\Models\Guest;
 use App\Models\Hotel;
+use App\Models\Promotion;
+use App\Models\RatePlan;
 use App\Models\Room;
 use App\Models\User;
 use Illuminate\Support\Carbon;
@@ -89,54 +91,35 @@ final class BookingService
                     'created_by_name' => $actor?->name ?? 'Web request',
                 ]);
 
-                $subtotal = 0;
-                foreach ($payload['rooms'] as $line) {
-                    $room = Room::query()->findOrFail($line['room_id']);
-                    $nights = $checkIn->diffInDays($checkOut);
+                [$lines, $subtotal] = $this->priceLines(
+                    $hotel,
+                    $payload['rooms'],
+                    $checkIn,
+                    $checkOut,
+                    $payload['source'] ?? null,
+                );
 
-                    // Website reservations honour the running promotion for the
-                    // room type, matching the rate quoted on the public pages.
-                    $promo = ($payload['source'] ?? null) === 'website'
-                        ? \App\Models\Promotion::runningByTypeForHotel($hotel->id)->get($room->room_type_id)
-                        : null;
-
-                    if ($promo) {
-                        $nightly = (int) $promo->promo_rate_cents;
-                        $lineTotal = $nights * $nightly;
-                        $planId = null;
-                    } elseif ($room->daily_rate_cents !== null) {
-                        $nightly = (int) $room->daily_rate_cents;
-                        $lineTotal = $nights * $nightly;
-                        $planId = null;
-                    } else {
-                        $plan = $this->resolvePlan($room, $line['rate_plan_id'] ?? null);
-                        $lineTotal = $this->rates->stayTotalCents($plan, $checkIn->toDateString(), $checkOut->toDateString());
-                        $nightly = (int) round($lineTotal / max(1, $nights));
-                        $planId = $plan->id;
-                    }
-
+                foreach ($lines as $line) {
                     BookingRoom::create([
                         'hotel_id' => $hotel->id,
                         'booking_id' => $booking->id,
-                        'room_id' => $room->id,
-                        'rate_plan_id' => $planId,
+                        'room_id' => $line['room_id'],
+                        'rate_plan_id' => $line['rate_plan_id'],
                         'check_in' => $checkIn->toDateString(),
                         'check_out' => $checkOut->toDateString(),
-                        'nights' => $nights,
-                        'nightly_rate_cents' => $nightly,
-                        'line_total_cents' => $lineTotal,
+                        'nights' => $line['nights'],
+                        'nightly_rate_cents' => $line['nightly_rate_cents'],
+                        'line_total_cents' => $line['line_total_cents'],
                         'active' => true,
-                        'active_key' => $this->allocationKey($room->id, $checkIn->toDateString(), $checkOut->toDateString()),
+                        'active_key' => $this->allocationKey($line['room_id'], $checkIn->toDateString(), $checkOut->toDateString()),
                     ]);
 
-                    if ($room->status === 'available') {
-                        $room->update(['status' => 'dirty']);
+                    if ($line['room']->status === 'available') {
+                        $line['room']->update(['status' => 'dirty']);
                     }
-
-                    $subtotal += $lineTotal;
                 }
 
-                $tax = $this->taxCents($hotel, $subtotal, array_column($payload['rooms'], 'rate_plan_id' ?? []));
+                $tax = $this->taxCents($hotel, $subtotal, []);
                 $total = max(0, $subtotal + $tax - $discount);
 
                 $booking->update([
@@ -171,6 +154,114 @@ final class BookingService
     }
 
     /**
+     * Price a stay without persisting anything. Uses exactly the same rules as
+     * {@see create()} (running website promotions, room daily rate, then the
+     * active rate plan) so a quoted total can never drift from the charged one.
+     *
+     * @param  array{check_in: string, check_out: string, rooms: array<int, array{room_id: int, rate_plan_id?: int}|int>, source?: string, discount_cents?: int}  $payload
+     * @return array{check_in: string, check_out: string, subtotal_cents: int, tax_cents: int, discount_cents: int, total_cents: int, lines: array<int, array<string, mixed>>}
+     */
+    public function quote(Hotel $hotel, array $payload): array
+    {
+        $checkIn = Carbon::parse($payload['check_in']);
+        $checkOut = Carbon::parse($payload['check_out']);
+
+        $this->assertValidWindow($checkIn, $checkOut);
+        $this->assertRoomsBelong($payload['rooms'], $hotel->id);
+
+        [$lines, $subtotal] = $this->priceLines(
+            $hotel,
+            $payload['rooms'],
+            $checkIn,
+            $checkOut,
+            $payload['source'] ?? null,
+        );
+
+        $discount = (int) ($payload['discount_cents'] ?? 0);
+        $tax = $this->taxCents($hotel, $subtotal, []);
+
+        return [
+            'check_in' => $checkIn->toDateString(),
+            'check_out' => $checkOut->toDateString(),
+            'subtotal_cents' => $subtotal,
+            'tax_cents' => $tax,
+            'discount_cents' => $discount,
+            'total_cents' => max(0, $subtotal + $tax - $discount),
+            'lines' => $lines,
+        ];
+    }
+
+    /**
+     * Read-only availability check for a requested set of rooms/window. Throws
+     * BookingConflictException (409) when any room is already taken so the
+     * caller can fail fast before charging a guest. The authoritative re-check
+     * still happens inside {@see create()} under a row lock.
+     *
+     * @param  array<int, array{room_id: int}|int>  $rooms
+     */
+    public function assertAvailable(Hotel $hotel, array $rooms, string $checkIn, string $checkOut): void
+    {
+        $in = Carbon::parse($checkIn);
+        $out = Carbon::parse($checkOut);
+
+        $this->assertValidWindow($in, $out);
+        $this->assertRoomsBelong($rooms, $hotel->id);
+        $this->assertRoomsFree($rooms, $hotel->id, $in, $out);
+    }
+
+    /**
+     * Resolve the nightly rate and line total for each requested room. Shared
+     * by create() and quote() so that what is quoted is what is charged.
+     *
+     * @param  array<int, array{room_id: int, rate_plan_id?: int}>  $rooms
+     * @return array{0: array<int, array{room: Room, room_id: int, rate_plan_id: int|null, nights: int, nightly_rate_cents: int, line_total_cents: int}>, 1: int}
+     */
+    private function priceLines(Hotel $hotel, array $rooms, Carbon $checkIn, Carbon $checkOut, ?string $source): array
+    {
+        $nights = $checkIn->diffInDays($checkOut);
+        $lines = [];
+        $subtotal = 0;
+
+        foreach ($rooms as $line) {
+            $room = Room::query()->findOrFail($line['room_id']);
+
+            // Website reservations honour the running promotion for the room
+            // type, matching the rate quoted on the public pages.
+            $promo = $source === 'website'
+                ? Promotion::runningByTypeForHotel($hotel->id)->get($room->room_type_id)
+                : null;
+
+            if ($promo) {
+                $nightly = (int) $promo->promo_rate_cents;
+                $lineTotal = $nights * $nightly;
+                $planId = null;
+            } elseif ($room->daily_rate_cents !== null) {
+                $nightly = (int) $room->daily_rate_cents;
+                $lineTotal = $nights * $nightly;
+                $planId = null;
+            } else {
+                $plan = $this->resolvePlan($room, $line['rate_plan_id'] ?? null);
+                $lineTotal = $this->rates->stayTotalCents($plan, $checkIn->toDateString(), $checkOut->toDateString());
+                $nightly = (int) round($lineTotal / max(1, $nights));
+                $planId = $plan->id;
+            }
+
+            $lines[] = [
+                'room' => $room,
+                'room_id' => $room->id,
+                'rate_plan_id' => $planId,
+                'nights' => $nights,
+                'nightly_rate_cents' => $nightly,
+                'line_total_cents' => $lineTotal,
+            ];
+
+            $subtotal += $lineTotal;
+        }
+
+        return [$lines, $subtotal];
+    }
+
+    /**
      * Move a booking forward in its workflow.
      */
     public function checkIn(Booking $booking, User $actor): Booking
@@ -200,7 +291,7 @@ final class BookingService
     {
         $this->assertStatus($booking, ['checked_in']);
 
-        return \DB::transaction(function () use ($booking, $actor) {
+        return \DB::transaction(function () use ($booking) {
             $booking->update(['status' => 'checked_out']);
             $now = now();
 
@@ -277,7 +368,7 @@ final class BookingService
 
         $this->assertValidWindow($checkIn, $checkOut);
 
-        return \DB::transaction(function () use ($booking, $actor, $payload, $checkIn, $checkOut, $newRoomIds) {
+        return \DB::transaction(function () use ($booking, $payload, $checkIn, $checkOut, $newRoomIds) {
             $this->lockRooms($newRoomIds);
             $this->assertRoomsFree($newRoomIds, $booking->hotel_id, $checkIn, $checkOut, (int) $booking->id);
 
@@ -326,10 +417,11 @@ final class BookingService
             $hotel = $booking->hotel()->first();
             $tax = $this->taxCents($hotel, $subtotal, []);
             $discount = $booking->discount_cents;
+            $orders = (int) $booking->orders_cents;
             $booking->update([
                 'subtotal_cents' => $subtotal,
                 'tax_cents' => $tax,
-                'total_cents' => max(0, $subtotal + $tax - $discount),
+                'total_cents' => max(0, $subtotal + $tax + $orders - $discount),
             ]);
 
             AuditLogger::critical($booking, 'booking.modified', [
@@ -459,7 +551,7 @@ final class BookingService
     }
 
     /**
-     * @param array<int, array{room_id: int, rate_plan_id?: int}|int> $rooms
+     * @param  array<int, array{room_id: int, rate_plan_id?: int}|int>  $rooms
      */
     private function assertRoomsFree(array $rooms, int $hotelId, Carbon $checkIn, Carbon $checkOut, ?int $exclude = null): void
     {
@@ -491,11 +583,11 @@ final class BookingService
         $this->availability->availableRooms($hotelId, $checkIn->toDateString(), $checkOut->toDateString());
     }
 
-    private function resolvePlan(Room $room, ?int $planId): \App\Models\RatePlan
+    private function resolvePlan(Room $room, ?int $planId): RatePlan
     {
         $plan = $planId
-            ? \App\Models\RatePlan::query()->whereKey($planId)->first()
-            : \App\Models\RatePlan::query()->where('room_type_id', $room->room_type_id)->where('is_active', true)->first();
+            ? RatePlan::query()->whereKey($planId)->first()
+            : RatePlan::query()->where('room_type_id', $room->room_type_id)->where('is_active', true)->first();
 
         if (! $plan || ! $plan->is_active) {
             throw new DomainValidationException('No active rate plan for this room', 'NO_RATE_PLAN');

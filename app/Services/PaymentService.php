@@ -50,7 +50,49 @@ final class PaymentService
         });
     }
 
-    public function refund(Payment $payment, string $reference = null, string $notes = null): Payment
+    /**
+     * Record a payment that was collected by an online gateway (no staff actor).
+     * Used by the PayDunya IPN once the booking it fulfils has been created.
+     */
+    public function recordGateway(Booking $booking, array $payload): Payment
+    {
+        $amount = (int) $payload['amount_cents'];
+        if ($amount <= 0) {
+            throw new ValidationException('Payment amount must be positive.', 'INVALID_AMOUNT');
+        }
+
+        return DB::transaction(function () use ($booking, $payload, $amount) {
+            $status = $payload['status'] ?? 'completed';
+
+            $payment = Payment::create([
+                'hotel_id' => $booking->hotel_id,
+                'booking_id' => $booking->id,
+                'guest_id' => $booking->guest_id,
+                'amount_cents' => $amount,
+                'method' => $payload['method'] ?? 'mobile_money',
+                'type' => $payload['type'] ?? 'payment',
+                'status' => $status,
+                'reference' => $payload['reference'] ?? null,
+                'paid_at' => $status === 'completed' ? now() : null,
+                'received_by' => null,
+                'notes' => $payload['notes'] ?? null,
+            ]);
+
+            if ($payment->status === 'completed') {
+                $this->recomputePaid($booking);
+            }
+
+            AuditLogger::critical($payment, 'payment.recorded', [
+                'booking' => $booking->booking_number,
+                'amount_cents' => $amount,
+                'gateway' => $payload['gateway'] ?? 'gateway',
+            ]);
+
+            return $payment;
+        });
+    }
+
+    public function refund(Payment $payment, ?string $reference = null, ?string $notes = null): Payment
     {
         return DB::transaction(function () use ($payment, $reference, $notes) {
             $payment->update([

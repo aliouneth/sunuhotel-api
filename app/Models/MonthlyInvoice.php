@@ -18,9 +18,13 @@ class MonthlyInvoice extends Model
     use HasFactory;
 
     public const STATUS_PENDING = 'pending';
+
     public const STATUS_PAID = 'paid';
+
     public const STATUS_OVERDUE = 'overdue';
+
     public const STATUS_SUSPENDED = 'suspended';
+
     public const STATUS_CANCELLED = 'cancelled';
 
     protected $table = 'monthly_invoices';
@@ -34,7 +38,7 @@ class MonthlyInvoice extends Model
         'paid_cents',
         'currency',
         'status',
-        'payment_method', // wallet | cinetpay | manual
+        'payment_method', // wallet | paydunya | manual
         'paid_at',
         'reference',
         'notes',

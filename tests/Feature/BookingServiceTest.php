@@ -4,8 +4,7 @@ namespace Tests\Feature;
 
 use App\Exceptions\BookingConflictException;
 use App\Exceptions\ValidationException;
-use App\Models\Booking;
-use App\Models\BookingRoom;
+use App\Models\BookingIntent;
 use App\Models\Guest;
 use App\Models\Hotel;
 use App\Models\RatePlan;
@@ -17,6 +16,7 @@ use App\Services\BookingService;
 use App\Services\PaymentService;
 use App\Support\Tenancy\HotelContext;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Spatie\Permission\PermissionRegistrar;
 use Tests\TestCase;
 
@@ -325,7 +325,7 @@ class BookingServiceTest extends TestCase
     {
         $other = Guest::factory()->create(['hotel_id' => Hotel::factory()->create()->id]);
 
-        $this->expectException(\App\Exceptions\ValidationException::class);
+        $this->expectException(ValidationException::class);
 
         app(BookingService::class)->create($this->hotel, $this->actor, [
             'guest_id' => $other->id,
@@ -335,11 +335,27 @@ class BookingServiceTest extends TestCase
         ]);
     }
 
-    public function test_public_endpoint_creates_pending_reservation_holding_the_room(): void
+    public function test_public_endpoint_starts_a_payment_instead_of_creating_a_booking(): void
     {
         $this->getJson('/api/v1/hotels/not-active/public')->assertNotFound();
 
-        $response = $this->postJson("/api/v1/hotels/{$this->hotel->slug}/public/bookings", [
+        config()->set('services.paydunya', [
+            'mode' => 'test',
+            'master_key' => 'test-master-key',
+            'public_key' => 'test-public-key',
+            'private_key' => 'test-private-key',
+            'token' => 'test-token',
+            'store_name' => 'SunuHotel',
+        ]);
+        Http::fake([
+            'app.paydunya.com/*/checkout-invoice/create' => Http::response([
+                'response_code' => '00',
+                'response_text' => 'https://app.paydunya.com/sandbox-checkout/invoice/PUBLIC_T1',
+                'token' => 'PUBLIC_T1',
+            ]),
+        ]);
+
+        $this->postJson("/api/v1/hotels/{$this->hotel->slug}/public/bookings", [
             'guest' => [
                 'first_name' => 'Public',
                 'last_name' => 'Guest',
@@ -350,29 +366,18 @@ class BookingServiceTest extends TestCase
             'check_out' => '2026-10-22',
             'rooms' => [$this->room->id],
             'adults' => 2,
-        ]);
+        ])
+            ->assertCreated()
+            ->assertJsonPath('data.token', 'PUBLIC_T1');
 
-        $response->assertCreated()
-            ->assertJsonPath('data.status', 'pending')
-            ->assertJsonPath('data.source', 'website')
-            ->assertJsonPath('data.guest.email', 'public@example.test');
+        // No reservation exists until the guest pays.
+        $this->assertDatabaseCount('bookings', 0);
 
-        $created = Booking::query()->findOrFail($response->json('data.id'));
-
-        $this->assertSame('pending', $created->status);
-        $this->assertNull($created->created_by);
-
-        $allocation = $created->rooms()->first();
-        $this->assertTrue($allocation->active);
-        $this->assertNotNull($allocation->active_key);
-
-        // The pending request holds the room: an overlapping attempt must fail.
-        $this->postJson("/api/v1/hotels/{$this->hotel->slug}/public/bookings", [
-            'guest' => ['first_name' => 'Other', 'last_name' => 'Guest'],
-            'check_in' => '2026-10-21',
-            'check_out' => '2026-10-23',
-            'rooms' => [$this->room->id],
-        ])->assertJson(['error' => 'ROOM_CONFLICT']);
+        $intent = BookingIntent::query()->firstOrFail();
+        $this->assertSame('pending', $intent->status);
+        $this->assertSame('website', $intent->source);
+        $this->assertSame('public@example.test', $intent->guest_email);
+        $this->assertNull($intent->booking_id);
     }
 
     public function test_public_booking_rejects_another_hotel_room(): void
@@ -380,7 +385,7 @@ class BookingServiceTest extends TestCase
         $foreignRoom = Room::factory()->create(['hotel_id' => Hotel::factory()->create()->id]);
 
         $this->postJson("/api/v1/hotels/{$this->hotel->slug}/public/bookings", [
-            'guest' => ['first_name' => 'A', 'last_name' => 'B'],
+            'guest' => ['first_name' => 'A', 'last_name' => 'B', 'phone' => '+221700000002'],
             'check_in' => '2026-10-20',
             'check_out' => '2026-10-22',
             'rooms' => [$foreignRoom->id],

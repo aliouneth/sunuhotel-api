@@ -20,6 +20,8 @@ class Permission extends SpatiePermission
         'rate-plans.manage',
         'bookings.view',
         'bookings.manage',
+        'orders.view',
+        'orders.manage',
         'guests.view',
         'guests.manage',
         'payments.view',

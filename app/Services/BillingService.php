@@ -92,6 +92,32 @@ class BillingService
         });
     }
 
+    /**
+     * Settle an invoice in full from a successful external gateway payment
+     * (e.g. PayDunya). Idempotent: the row is reloaded under a lock and a
+     * second call on an already-paid invoice is a no-op, so a duplicated IPN
+     * callback never double-credits. Returns true when the invoice is paid.
+     */
+    public function settleFromGateway(MonthlyInvoice $invoice, string $method = 'paydunya'): bool
+    {
+        return (bool) DB::transaction(function () use ($invoice, $method) {
+            $fresh = MonthlyInvoice::lockForUpdate()->find($invoice->id);
+
+            if (! $fresh || $fresh->status === MonthlyInvoice::STATUS_PAID) {
+                return true;
+            }
+
+            $fresh->update([
+                'status' => MonthlyInvoice::STATUS_PAID,
+                'paid_cents' => $fresh->amount_cents,
+                'payment_method' => $method,
+                'paid_at' => now(),
+            ]);
+
+            return true;
+        });
+    }
+
     public function markOverdue(): int
     {
         $lastMonth = now()->subMonth()->format('Y-m');
@@ -145,6 +171,7 @@ class BillingService
         return DB::transaction(function () use ($hotel, $amountCents) {
             $locked = Hotel::lockForUpdate()->find($hotel->id);
             $locked->update(['wallet_balance_cents' => $locked->wallet_balance_cents + $amountCents]);
+
             return $locked->fresh()->wallet_balance_cents;
         });
     }

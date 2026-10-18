@@ -2,14 +2,19 @@
 
 namespace Tests\Feature;
 
+use App\Models\BookingIntent;
+use App\Models\CountryTaxRate;
 use App\Models\Hotel;
 use App\Models\MonthlyInvoice;
 use App\Models\Promotion;
+use App\Models\RatePlan;
 use App\Models\Role;
+use App\Models\Room;
 use App\Models\RoomType;
 use App\Models\User;
 use App\Support\Tenancy\HotelContext;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Spatie\Permission\PermissionRegistrar;
 use Tests\TestCase;
 
@@ -18,8 +23,11 @@ class PromotionTest extends TestCase
     use RefreshDatabase;
 
     private User $platform;
+
     private Hotel $hotel;
+
     private RoomType $roomType;
+
     private MonthlyInvoice $invoice;
 
     protected function setUp(): void
@@ -43,7 +51,7 @@ class PromotionTest extends TestCase
         $this->platform = $platform;
         $this->hotel = $hotel;
         $this->roomType = $roomType;
-        $this->ratePlan = \App\Models\RatePlan::create([
+        $this->ratePlan = RatePlan::create([
             'hotel_id' => $hotel->id,
             'room_type_id' => $roomType->id,
             'name' => 'Giga Plan',
@@ -52,6 +60,26 @@ class PromotionTest extends TestCase
             'basis' => 'daily',
         ]);
         $this->invoice = $invoice;
+    }
+
+    private function configurePayDunya(): void
+    {
+        config()->set('services.paydunya', [
+            'mode' => 'test',
+            'master_key' => 'test-master-key',
+            'public_key' => 'test-public-key',
+            'private_key' => 'test-private-key',
+            'token' => 'test-token',
+            'store_name' => 'SunuHotel',
+        ]);
+
+        Http::fake([
+            'app.paydunya.com/*/checkout-invoice/create' => Http::response([
+                'response_code' => '00',
+                'response_text' => 'https://app.paydunya.com/sandbox-checkout/invoice/PROMO_T1',
+                'token' => 'PROMO_T1',
+            ]),
+        ]);
     }
 
     private function promotionsPayload(array $overrides = []): array
@@ -190,7 +218,7 @@ class PromotionTest extends TestCase
             'ends_on' => now()->toDateString(),
         ]);
 
-        $room = \App\Models\Room::factory()->create([
+        $room = Room::factory()->create([
             'hotel_id' => $this->hotel->id,
             'room_type_id' => $this->roomType->id,
             'daily_rate_cents' => 60000,
@@ -214,7 +242,7 @@ class PromotionTest extends TestCase
             'ends_on' => now()->toDateString(),
         ]);
 
-        $room = \App\Models\Room::factory()->create([
+        $room = Room::factory()->create([
             'hotel_id' => $this->hotel->id,
             'room_type_id' => $this->roomType->id,
             'daily_rate_cents' => 70000,
@@ -227,7 +255,7 @@ class PromotionTest extends TestCase
             ->assertJsonPath('data.rooms.0.original_rate_cents', 70000)
             ->assertJsonPath('data.rooms.0.promo_rate_cents', 50000);
 
-        $this->assertSame($room->id, \App\Models\Room::find($room->id)->id);
+        $this->assertSame($room->id, Room::find($room->id)->id);
     }
 
     public function test_website_booking_is_priced_at_promo_rate(): void
@@ -241,13 +269,15 @@ class PromotionTest extends TestCase
             'ends_on' => now()->toDateString(),
         ]);
 
-        $room = \App\Models\Room::factory()->create([
+        $room = Room::factory()->create([
             'hotel_id' => $this->hotel->id,
             'room_type_id' => $this->roomType->id,
             'daily_rate_cents' => 80000,
         ]);
 
-        $response = $this->postJson("/api/v1/hotels/{$this->hotel->slug}/public/bookings", [
+        $this->configurePayDunya();
+
+        $this->postJson("/api/v1/hotels/{$this->hotel->slug}/public/bookings", [
             'guest' => [
                 'first_name' => 'Ada',
                 'last_name' => 'Lovelace',
@@ -257,14 +287,15 @@ class PromotionTest extends TestCase
             'check_out' => now()->addDays(3)->toDateString(),
             'rooms' => [$room->id],
             'adults' => 1,
-        ]);
+        ])
+            ->assertCreated()
+            ->assertJsonPath('data.amount_cents', 129600);
 
         // 2 nights x 60000 promo rate, subtotal 120000; hotel tax 8% → total 129600.
-        $response->assertCreated();
-        $booking = $response->json('data');
-
-        $this->assertSame(120000, $booking['subtotal_cents']);
-        $this->assertSame(129600, $booking['total_cents']);
+        $intent = BookingIntent::query()->latest('id')->firstOrFail();
+        $this->assertSame(120000, $intent->subtotal_cents);
+        $this->assertSame(9600, $intent->tax_cents);
+        $this->assertSame(129600, $intent->total_cents);
     }
 
     public function test_non_platform_user_cannot_manage_promotions(): void
@@ -284,7 +315,7 @@ class PromotionTest extends TestCase
     }
 
     /* ------------------------------------------------------------------ */
-    /* Country tax rate fallback + platform CRUD                           */
+    /* Country tax rate fallback + platform CRUD */
     /* ------------------------------------------------------------------ */
 
     private function countryTaxPayload(array $overrides = []): array
@@ -298,12 +329,12 @@ class PromotionTest extends TestCase
     public function test_country_rate_is_pure_fallback_after_hotel_tax(): void
     {
         $this->hotel->update(['tax_rate' => 0, 'country' => 'SN']);
-        \App\Models\CountryTaxRate::create([
+        CountryTaxRate::create([
             'country_code' => 'SN',
             'tax_rate' => 18,
         ]);
 
-        $room = \App\Models\Room::factory()->create([
+        $room = Room::factory()->create([
             'hotel_id' => $this->hotel->id,
             'room_type_id' => $this->roomType->id,
             'daily_rate_cents' => 50000,
@@ -311,6 +342,8 @@ class PromotionTest extends TestCase
 
         // Hotel tax 0 + country SN @18 → 2 nights x 50000 subtotal, tax 18000,
         // total 118000; the public booking carries the applied fallback tax.
+        $this->configurePayDunya();
+
         $this->postJson("/api/v1/hotels/{$this->hotel->slug}/public/bookings", [
             'guest' => ['first_name' => 'Ada', 'last_name' => 'Lovelace', 'phone' => '33445566'],
             'check_in' => now()->addDays(1)->toDateString(),
@@ -319,22 +352,25 @@ class PromotionTest extends TestCase
             'adults' => 1,
         ])
             ->assertCreated()
-            ->assertJsonPath('data.subtotal_cents', 100000)
-            ->assertJsonPath('data.tax_cents', 18000)
-            ->assertJsonPath('data.total_cents', 118000);
+            ->assertJsonPath('data.amount_cents', 118000);
+
+        $intent = BookingIntent::query()->latest('id')->firstOrFail();
+        $this->assertSame(100000, $intent->subtotal_cents);
+        $this->assertSame(18000, $intent->tax_cents);
+        $this->assertSame(118000, $intent->total_cents);
     }
 
     public function test_hotel_own_tax_rate_still_wins_over_country(): void
     {
         $this->hotel->update(['tax_rate' => 10]);
-        \App\Models\CountryTaxRate::create([
+        CountryTaxRate::create([
             'country_code' => 'SN',
             'tax_rate' => 18,
         ]);
 
         $this->assertSame(
             10.0,
-            \App\Models\CountryTaxRate::effectiveRateForHotel($this->hotel)
+            CountryTaxRate::effectiveRateForHotel($this->hotel)
         );
     }
 
@@ -345,7 +381,7 @@ class PromotionTest extends TestCase
             ->assertCreated()
             ->assertJsonPath('data.country_code', 'CI');
 
-        $id = \App\Models\CountryTaxRate::query()->where('country_code', 'CI')->first()->id;
+        $id = CountryTaxRate::query()->where('country_code', 'CI')->first()->id;
 
         $this->actingAs($this->platform, 'sanctum')
             ->putJson("/api/v1/platform/country-tax-rates/{$id}", ['tax_rate' => 20.5])

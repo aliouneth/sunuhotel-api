@@ -20,8 +20,7 @@ class BookingController extends Controller
     public function __construct(
         private readonly BookingService $bookings,
         private readonly PaymentService $payments,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request)
     {
@@ -83,7 +82,7 @@ class BookingController extends Controller
     {
         $this->authorize('bookings.view');
 
-        $booking->load(['guest', 'rooms.room', 'rooms.ratePlan', 'payments.receiver']);
+        $booking->load(['guest', 'rooms.room', 'rooms.ratePlan', 'payments.receiver', 'orders.items']);
 
         return response()->json(['data' => $booking]);
     }

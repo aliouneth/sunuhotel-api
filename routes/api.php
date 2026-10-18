@@ -13,6 +13,9 @@ use App\Http\Controllers\Api\V1\GuestController;
 use App\Http\Controllers\Api\V1\HotelBillingController;
 use App\Http\Controllers\Api\V1\HotelController;
 use App\Http\Controllers\Api\V1\InvitationController;
+use App\Http\Controllers\Api\V1\OrderController;
+use App\Http\Controllers\Api\V1\PayDunyaBookingController;
+use App\Http\Controllers\Api\V1\PayDunyaController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PlatformAdminController;
 use App\Http\Controllers\Api\V1\PlatformGuestController;
@@ -63,6 +66,16 @@ Route::prefix('v1')->group(function () {
 
     // Public corporate contact info for the registration ("under review") screen.
     Route::get('/platform/support', [PlatformAdminController::class, 'support']);
+
+    // PayDunya IPN (Instant Payment Notification). Must stay public: PayDunya
+    // posts the transaction result here server-to-server, authenticated by a
+    // SHA-512 hash of the master key plus a confirm re-check, not by a token.
+    Route::post('/paydunya/ipn', [PayDunyaController::class, 'ipn']);
+
+    // PayDunya IPN for a guest reservation + the public status lookup the
+    // browser uses on the return_url screen. Same untrusted-callback rules.
+    Route::post('/paydunya/booking-ipn', [PayDunyaBookingController::class, 'ipn']);
+    Route::get('/paydunya/booking-status/{token}', [PayDunyaBookingController::class, 'status']);
 
     // No guest self-service auth exists anymore. Guests are only created and
     // looked up as booking data; the public guest portal lets a visitor make a
@@ -151,6 +164,10 @@ Route::prefix('v1')->group(function () {
         // Hotel billing view (bills due to the platform).
         Route::get('/billing', [HotelBillingController::class, 'index'])->middleware('permission:payments.view');
 
+        // Pay a monthly invoice online via PayDunya (returns a payment URL).
+        Route::post('/billing/invoices/{invoice}/paydunya', [PayDunyaController::class, 'initiate'])
+            ->middleware('permission:payments.manage');
+
         // Team management.
         Route::get('/team', [TeamController::class, 'index']);
         Route::post('/team', [TeamController::class, 'store']);
@@ -185,6 +202,12 @@ Route::prefix('v1')->group(function () {
         Route::get('bookings/{booking}/payments', [PaymentController::class, 'index']);
         Route::post('bookings/{booking}/payments', [PaymentController::class, 'store']);
         Route::post('payments/{payment}/refund', [PaymentController::class, 'refund']);
+
+        // On-site orders (restaurant / spa / leisure), nested under booking.
+        Route::get('bookings/{booking}/orders', [OrderController::class, 'index']);
+        Route::post('bookings/{booking}/orders', [OrderController::class, 'store']);
+        Route::put('orders/{order}', [OrderController::class, 'update']);
+        Route::post('orders/{order}/void', [OrderController::class, 'void']);
 
         // Staff & payroll.
         Route::post('employees/{employee}/pay', [EmployeeController::class, 'pay']);

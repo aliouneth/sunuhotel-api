@@ -122,6 +122,9 @@ class PlatformAdminController extends Controller
             'description' => ['nullable', 'string', 'max:5000'],
             'comment' => ['nullable', 'string', 'max:5000'],
             'other_services' => ['nullable', 'string', 'max:5000'],
+            'has_restaurant' => ['sometimes', 'boolean'],
+            'has_spa' => ['sometimes', 'boolean'],
+            'has_leisure' => ['sometimes', 'boolean'],
             // Nullable for the same reason as in update(): an emptied input must
             // not fail validation and lose the rest of the submission.
             'currency' => ['sometimes', 'nullable', 'string', 'size:3'],
@@ -149,6 +152,7 @@ class PlatformAdminController extends Controller
         foreach ([
             'legal_name', 'address', 'city', 'country', 'phone', 'phone_2',
             'email', 'website', 'description', 'comment', 'other_services', 'stars',
+            'has_restaurant', 'has_spa', 'has_leisure',
         ] as $field) {
             if (array_key_exists($field, $validated)) {
                 $hotel->{$field} = $validated[$field];
@@ -239,6 +243,9 @@ class PlatformAdminController extends Controller
             'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
             'comment' => ['sometimes', 'nullable', 'string', 'max:5000'],
             'other_services' => ['sometimes', 'nullable', 'string', 'max:5000'],
+            'has_restaurant' => ['sometimes', 'boolean'],
+            'has_spa' => ['sometimes', 'boolean'],
+            'has_leisure' => ['sometimes', 'boolean'],
             // The next block is nullable on purpose. Laravel's
             // ConvertEmptyStringsToNull middleware turns an emptied input into
             // null, so without `nullable` a single cleared box would fail
@@ -263,6 +270,7 @@ class PlatformAdminController extends Controller
             'name', 'legal_name', 'slug', 'address', 'city', 'country',
             'phone', 'phone_2', 'email', 'website', 'description', 'comment',
             'other_services', 'currency', 'timezone', 'status', 'stars',
+            'has_restaurant', 'has_spa', 'has_leisure',
             'tax_rate', 'check_in_time', 'check_out_time',
         ])->all();
 
@@ -750,6 +758,9 @@ class PlatformAdminController extends Controller
             'description' => $hotel->description,
             'comment' => $hotel->comment,
             'other_services' => $hotel->other_services,
+            'has_restaurant' => (bool) $hotel->has_restaurant,
+            'has_spa' => (bool) $hotel->has_spa,
+            'has_leisure' => (bool) $hotel->has_leisure,
             'currency' => $hotel->currency,
             'timezone' => $hotel->timezone,
             'tax_rate' => (float) $hotel->tax_rate,

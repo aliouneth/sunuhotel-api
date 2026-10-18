@@ -17,7 +17,7 @@ use Spatie\Permission\Models\Role as SpatieRole;
  */
 class Role extends SpatieRole
 {
-public const LABELS = [
+    public const LABELS = [
         'owner' => 'Owner',
         'manager' => 'Manager',
         'front-desk' => 'Front Desk',
@@ -30,7 +30,7 @@ public const LABELS = [
     }
 
     /**
-* Idempotent: materialises the global permission set and the four role
+     * Idempotent: materialises the global permission set and the four role
      * definitions with their fixed permission matrices. Safe to call in
      * requests (cheap firstOrCreate) and in the database seeder.
      */
@@ -38,12 +38,13 @@ public const LABELS = [
     {
         $permissionsByRole = [
             'owner' => Permission::ALL,
-'manager' => [
+            'manager' => [
                 'hotels.update', 'hotels.view',
                 'users.manage',
                 'rooms.manage', 'rooms.view',
                 'rate-plans.manage',
                 'bookings.manage', 'bookings.view',
+                'orders.manage', 'orders.view',
                 'guests.manage', 'guests.view',
                 'payments.manage', 'payments.view',
                 'employees.manage', 'employees.view',
@@ -53,12 +54,14 @@ public const LABELS = [
             'front-desk' => [
                 'rooms.view',
                 'bookings.manage', 'bookings.view',
+                'orders.manage', 'orders.view',
                 'guests.manage', 'guests.view',
                 'payments.create', 'payments.view',
                 'employees.view',
             ],
             'accountant' => [
                 'hotels.view', 'bookings.view',
+                'orders.view',
                 'payments.manage', 'payments.view', 'reports.view',
                 'employees.view',
                 'expenses.view', 'expenses.manage',

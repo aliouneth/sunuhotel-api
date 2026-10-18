@@ -30,6 +30,7 @@ class Hotel extends Model
     protected $fillable = [
         'uuid', 'slug', 'stars', 'name', 'legal_name', 'address', 'city', 'country',
         'phone', 'phone_2', 'email', 'website', 'description', 'comment', 'other_services',
+        'has_restaurant', 'has_spa', 'has_leisure',
         'timezone', 'currency', 'tax_rate',
         'check_in_time', 'check_out_time', 'logo_path', 'settings', 'status',
         'trial_ends_at', 'created_by', 'wallet_balance_cents',
@@ -38,6 +39,9 @@ class Hotel extends Model
     protected $casts = [
         'settings' => 'array',
         'tax_rate' => 'float',
+        'has_restaurant' => 'boolean',
+        'has_spa' => 'boolean',
+        'has_leisure' => 'boolean',
         'wallet_balance_cents' => 'integer',
         'trial_ends_at' => 'datetime',
         'check_in_time' => 'datetime:H:i',

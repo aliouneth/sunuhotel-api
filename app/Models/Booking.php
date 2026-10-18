@@ -17,7 +17,7 @@ class Booking extends Model
     protected $fillable = [
         'hotel_id', 'booking_number', 'guest_id', 'status', 'check_in', 'check_out',
         'adults', 'children', 'source', 'subtotal_cents', 'tax_cents',
-        'discount_cents', 'total_cents', 'paid_cents', 'notes',
+        'discount_cents', 'orders_cents', 'total_cents', 'paid_cents', 'notes',
         'cancellation_reason', 'cancelled_by', 'cancelled_at',
         'created_by', 'created_by_name',
     ];
@@ -29,6 +29,7 @@ class Booking extends Model
         'subtotal_cents' => 'integer',
         'tax_cents' => 'integer',
         'discount_cents' => 'integer',
+        'orders_cents' => 'integer',
         'total_cents' => 'integer',
         'paid_cents' => 'integer',
     ];
@@ -53,6 +54,11 @@ class Booking extends Model
     public function payments()
     {
         return $this->hasMany(Payment::class);
+    }
+
+    public function orders()
+    {
+        return $this->hasMany(Order::class);
     }
 
     public function getNightsAttribute(): int

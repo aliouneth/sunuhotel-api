@@ -3,13 +3,16 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Exceptions\ValidationException as DomainValidationException;
+use App\Models\BookingIntent;
 use App\Models\Hotel;
+use App\Models\Promotion;
 use App\Models\RatePlan;
 use App\Models\Room;
 use App\Services\AvailabilityService;
 use App\Services\BookingService;
+use App\Services\PayDunyaService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Public read-only endpoint used by the marketing site to surface a hotel's
@@ -20,12 +23,15 @@ class PublicHotelController extends Controller
     public function __construct(
         private readonly AvailabilityService $availability,
         private readonly BookingService $bookings,
-    ) {
-    }
+        private readonly PayDunyaService $paydunya,
+    ) {}
 
     /**
-     * Public reservation request: an online guest creates a PENDING booking
-     * that a hotel user must review and accept.
+     * Public reservation request. Payment guarantees the reservation, so no
+     * Booking is created here: the requested stay is captured as a
+     * BookingIntent and the guest is redirected to PayDunya to pay the full
+     * stay total. The real, `confirmed` Booking is created only when the
+     * gateway confirms the payment (see PayDunyaBookingController::ipn).
      */
     public function storeBooking(Request $request, string $slug)
     {
@@ -51,27 +57,71 @@ class PublicHotelController extends Controller
             'notes' => ['nullable', 'string', 'max:500'],
         ]);
 
-        try {
-            $booking = $this->bookings->create(
-                $hotel,
-                null,
-                [
-                    'guest' => $validated['guest'],
-                    'check_in' => $validated['check_in'],
-                    'check_out' => $validated['check_out'],
-                    'rooms' => array_map(fn ($id) => ['room_id' => (int) $id], $validated['rooms']),
-                    'adults' => $validated['adults'] ?? 1,
-                    'children' => $validated['children'] ?? 0,
-                    'source' => 'website',
-                    'status' => 'pending',
-                    'notes' => $validated['notes'] ?? null,
-                ],
-            );
-        } catch (DomainValidationException|\App\Exceptions\BookingConflictException $e) {
-            throw $e;
+        $rooms = array_map(fn ($id) => ['room_id' => (int) $id], $validated['rooms']);
+
+        // Fail fast when the rooms are already taken. The authoritative check
+        // happens again, under a row lock, when the payment is fulfilled.
+        $this->bookings->assertAvailable($hotel, $rooms, $validated['check_in'], $validated['check_out']);
+
+        if (! $this->paydunya->configured()) {
+            return response()->json(['message' => 'Online payment is not configured.'], 503);
         }
 
-        return response()->json(['data' => $booking], 201);
+        $quote = $this->bookings->quote($hotel, [
+            'check_in' => $validated['check_in'],
+            'check_out' => $validated['check_out'],
+            'rooms' => $rooms,
+            'source' => 'website',
+        ]);
+
+        $intent = BookingIntent::create([
+            'hotel_id' => $hotel->id,
+            'status' => BookingIntent::STATUS_PENDING,
+            'guest_first_name' => $validated['guest']['first_name'],
+            'guest_last_name' => $validated['guest']['last_name'],
+            'guest_email' => $validated['guest']['email'] ?? null,
+            'guest_phone' => $validated['guest']['phone'],
+            'check_in' => $validated['check_in'],
+            'check_out' => $validated['check_out'],
+            'rooms' => array_values(array_map('intval', $validated['rooms'])),
+            'adults' => $validated['adults'] ?? 1,
+            'children' => $validated['children'] ?? 0,
+            'subtotal_cents' => $quote['subtotal_cents'],
+            'tax_cents' => $quote['tax_cents'],
+            'discount_cents' => $quote['discount_cents'],
+            'total_cents' => $quote['total_cents'],
+            'currency' => $hotel->currency ?: 'XOF',
+            'source' => 'website',
+            'notes' => $validated['notes'] ?? null,
+        ]);
+
+        try {
+            $result = $this->paydunya->createBookingInvoice($intent, $hotel, [
+                'return_url' => $this->frontendUrl('/guest/'.$hotel->slug.'/thank-you'),
+                'cancel_url' => $this->frontendUrl('/guest/'.$hotel->slug),
+                'callback_url' => url('/api/v1/paydunya/booking-ipn'),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('PayDunya booking checkout creation failed', [
+                'intent_id' => $intent->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            $intent->update(['status' => BookingIntent::STATUS_FAILED]);
+
+            return response()->json(['message' => 'Could not start the payment. Please try again.'], 502);
+        }
+
+        $intent->update(['token' => $result['token']]);
+
+        return response()->json([
+            'data' => [
+                'payment_url' => $result['url'],
+                'token' => $result['token'],
+                'amount_cents' => $intent->total_cents,
+                'currency' => $intent->currency,
+            ],
+        ], 201);
     }
 
     public function search(Request $request)
@@ -140,7 +190,7 @@ class PublicHotelController extends Controller
                         ->get()
                         ->keyBy('room_type_id');
 
-                    $promoByType = \App\Models\Promotion::runningByTypeForHotel($hotel->id);
+                    $promoByType = Promotion::runningByTypeForHotel($hotel->id);
 
                     $rooms = $rooms->map(function (Room $room) use ($planByType, $promoByType) {
                         $regular = $room->daily_rate_cents ?? $planByType->get($room->room_type_id)?->base_rate_cents ?? 0;
@@ -197,7 +247,7 @@ class PublicHotelController extends Controller
      */
     public function promotions()
     {
-        $promos = \App\Models\Promotion::query()
+        $promos = Promotion::query()
             ->running()
             ->with([
                 'roomType:id,name',
@@ -207,11 +257,11 @@ class PublicHotelController extends Controller
             ->orderByDesc('is_active')
             ->orderBy('created_at')
             ->get()
-            ->filter(fn (\App\Models\Promotion $p) => $p->hotel?->status === 'active')
+            ->filter(fn (Promotion $p) => $p->hotel?->status === 'active')
             ->values();
 
         return response()->json([
-            'data' => $promos->map(function (\App\Models\Promotion $p) {
+            'data' => $promos->map(function (Promotion $p) {
                 $hotel = $p->hotel;
                 $image = $hotel->hotelImages->sortBy('sort_order')->first();
 
@@ -256,7 +306,7 @@ class PublicHotelController extends Controller
 
         // Running promotions override the effective nightly rate for their room
         // type, and the crossed-out original rate is still exposed for the UI.
-        $promoByType = \App\Models\Promotion::runningByTypeForHotel($hotel->id);
+        $promoByType = Promotion::runningByTypeForHotel($hotel->id);
 
         // Effective nightly rate per room type = the same source the booking
         // engine prices from: the room's own daily rate wins, then the active
@@ -344,7 +394,7 @@ class PublicHotelController extends Controller
             ->get()
             ->keyBy('room_type_id');
 
-        $promoByType = \App\Models\Promotion::runningByTypeForHotel($hotel->id);
+        $promoByType = Promotion::runningByTypeForHotel($hotel->id);
 
         $rooms = $rooms->map(function (Room $room) use ($planByType, $promoByType) {
             $regular = $room->daily_rate_cents ?? $planByType->get($room->room_type_id)?->base_rate_cents ?? 0;
@@ -373,5 +423,10 @@ class PublicHotelController extends Controller
                 'rooms' => $rooms->load('roomType:id,name')->values(),
             ],
         ]);
+    }
+
+    private function frontendUrl(string $path): string
+    {
+        return rtrim((string) config('app.frontend_url'), '/').$path;
     }
 }
