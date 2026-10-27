@@ -42,6 +42,11 @@ class PayDunyaService
             : self::MODE_TEST;
     }
 
+    public function mock(): bool
+    {
+        return (bool) config('services.paydunya.mock', false);
+    }
+
     public function baseUrl(): string
     {
         return $this->mode() === self::MODE_LIVE ? self::BASE_LIVE : self::BASE_TEST;
@@ -54,6 +59,10 @@ class PayDunyaService
      */
     public function configured(): bool
     {
+        if ($this->mock()) {
+            return true;
+        }
+
         return $this->credential('master_key') !== ''
             && $this->credential('private_key') !== ''
             && $this->credential('token') !== '';
@@ -146,6 +155,29 @@ class PayDunyaService
      */
     private function createCheckout(array $payload): array
     {
+        if ($this->mock()) {
+            $token = 'MOCK_'.bin2hex(random_bytes(8));
+            $returnUrl = (string) ($payload['actions']['return_url'] ?? rtrim((string) config('app.frontend_url'), '/'));
+
+            return [
+                'token' => $token,
+                'url' => $returnUrl.(str_contains($returnUrl, '?') ? '&' : '?').'token='.urlencode($token),
+            ];
+        }
+
+        $logoUrl = trim((string) config('services.paydunya.logo_url', ''));
+        if ($logoUrl === '') {
+            $logoUrl = rtrim((string) config('app.frontend_url'), '/').'/logo.png';
+        }
+
+        $payload['store'] = array_merge(
+            ['logo_url' => $logoUrl],
+            $payload['store'] ?? [],
+        );
+        if (empty($payload['store']['logo_url'])) {
+            $payload['store']['logo_url'] = $logoUrl;
+        }
+
         $response = Http::withHeaders($this->headers())
             ->acceptJson()
             ->post($this->baseUrl().'/checkout-invoice/create', $payload);
@@ -173,6 +205,37 @@ class PayDunyaService
      */
     public function confirm(string $token): array
     {
+        if ($this->mock()) {
+            $masterKey = $this->credential('master_key');
+            $totalMajor = null;
+            $customData = [];
+
+            $intent = \App\Models\BookingIntent::query()->withoutGlobalScopes()->where('token', $token)->first();
+            if ($intent) {
+                $totalMajor = $this->toMajorUnits($intent->total_cents);
+                $customData = ['intent_id' => $intent->id];
+            } else {
+                $invoice = \App\Models\MonthlyInvoice::query()->where('reference', $token)->first();
+                if ($invoice) {
+                    $dueCents = max(0, $invoice->amount_cents - $invoice->paid_cents);
+                    $totalMajor = $this->toMajorUnits($dueCents);
+                    $customData = ['invoice_id' => $invoice->id];
+                }
+            }
+
+            return [
+                'response_code' => '00',
+                'response_text' => 'Transaction Found',
+                'hash' => hash('sha512', $masterKey),
+                'status' => 'completed',
+                'invoice' => array_filter([
+                    'token' => $token,
+                    'total_amount' => $totalMajor,
+                ], fn ($v) => $v !== null),
+                'custom_data' => $customData,
+            ];
+        }
+
         $response = Http::withHeaders($this->headers())
             ->acceptJson()
             ->get($this->baseUrl().'/checkout-invoice/confirm/'.rawurlencode($token));

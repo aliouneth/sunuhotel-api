@@ -59,6 +59,8 @@ return [
         'private_key' => env("PAYDUNYA_{$paydunyaMode}_PRIVATE_KEY", env('PAYDUNYA_PRIVATE_KEY')),
         'token' => env("PAYDUNYA_{$paydunyaMode}_TOKEN", env('PAYDUNYA_TOKEN')),
         'store_name' => env('PAYDUNYA_STORE_NAME', 'SunuHotel'),
+        'logo_url' => env('PAYDUNYA_LOGO_URL'),
+        'mock' => (bool) env('PAYDUNYA_MOCK', false),
     ],
 
 ];

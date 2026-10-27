@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Api\V1\PayDunyaBookingController;
 use App\Models\BookingIntent;
 use App\Models\Hotel;
 use App\Models\Promotion;
@@ -113,6 +114,19 @@ class PublicHotelController extends Controller
         }
 
         $intent->update(['token' => $result['token']]);
+
+        if ($this->paydunya->mock()) {
+            $hash = hash('sha512', (string) config('services.paydunya.master_key'));
+            $ipnRequest = Request::create('/api/v1/paydunya/booking-ipn', 'POST', [
+                'data' => [
+                    'hash' => $hash,
+                    'status' => 'completed',
+                    'invoice' => ['token' => $result['token']],
+                    'custom_data' => ['intent_id' => $intent->id],
+                ],
+            ]);
+            app(PayDunyaBookingController::class)->ipn($ipnRequest);
+        }
 
         return response()->json([
             'data' => [

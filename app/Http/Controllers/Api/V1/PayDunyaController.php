@@ -71,6 +71,19 @@ class PayDunyaController extends Controller
         // carries custom_data. Only the most recent attempt is stored.
         $invoice->update(['reference' => $result['token']]);
 
+        if ($this->paydunya->mock()) {
+            $hash = hash('sha512', (string) config('services.paydunya.master_key'));
+            $ipnRequest = Request::create('/api/v1/paydunya/ipn', 'POST', [
+                'data' => [
+                    'hash' => $hash,
+                    'status' => 'completed',
+                    'invoice' => ['token' => $result['token']],
+                    'custom_data' => ['invoice_id' => $invoice->id],
+                ],
+            ]);
+            $this->ipn($ipnRequest);
+        }
+
         return response()->json([
             'data' => [
                 'payment_url' => $result['url'],
