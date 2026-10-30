@@ -32,7 +32,13 @@ class BookingController extends Controller
             ->when($request->filled('from'), fn ($q) => $q->whereDate('check_in', '>=', $request->string('from')))
             ->when($request->filled('to'), fn ($q) => $q->whereDate('check_in', '<=', $request->string('to')))
             ->when($request->filled('guest_id'), fn ($q) => $q->where('guest_id', $request->integer('guest_id')))
-            ->when($request->filled('search'), fn ($q) => $q->where('booking_number', 'like', '%'.$request->string('search').'%'))
+            ->when($request->filled('search'), fn ($q) => $q->where(function ($q2) use ($request) {
+                $term = '%'.$request->string('search').'%';
+                $q2->where('booking_number', 'like', $term)
+                    ->orWhereHas('guest', fn ($g) => $g->where('first_name', 'like', $term)
+                        ->orWhere('last_name', 'like', $term)
+                        ->orWhereRaw("CONCAT(first_name, ' ', last_name) like ?", [$term]));
+            }))
             ->orderByDesc('check_in')
             ->paginate(30);
 
