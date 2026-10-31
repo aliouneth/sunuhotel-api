@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Api\V1\PayDunyaBookingController;
 use App\Models\BookingIntent;
+use App\Models\Booking;
 use App\Models\Hotel;
 use App\Models\Promotion;
+use App\Models\Review;
 use App\Models\RatePlan;
 use App\Models\Room;
 use App\Services\AvailabilityService;
@@ -164,7 +166,7 @@ class PublicHotelController extends Controller
 
         $hotels = $query->orderBy('name')
             ->take(30)
-            ->get(['id', 'name', 'slug', 'city', 'country', 'currency', 'phone', 'email', 'logo_path'])
+            ->get(['id', 'name', 'slug', 'city', 'country', 'currency', 'phone', 'email', 'logo_path', 'stars'])
             ->load('hotelImages');
 
         // Attach the uploaded gallery as a ready-to-render `images` list so the
@@ -362,17 +364,34 @@ class PublicHotelController extends Controller
             return $type;
         });
 
+        $reviews = $hotel->reviews()->published()->orderByDesc('created_at')->get();
+        $ratingAvg = $reviews->count() > 0 ? round((float) $reviews->avg('rating'), 1) : null;
+
         return response()->json([
             'data' => [
                 'name' => $hotel->name,
                 'city' => $hotel->city,
                 'country' => $hotel->country,
                 'currency' => $hotel->currency,
+                'stars' => $hotel->stars,
                 'check_in_time' => $hotel->check_in_time->format('H:i'),
                 'check_out_time' => $hotel->check_out_time->format('H:i'),
                 'phone' => $hotel->phone,
                 'email' => $hotel->email,
                 'room_types' => $roomTypes->makeHidden(['created_at', 'updated_at']),
+                'rating' => [
+                    'average' => $ratingAvg,
+                    'count' => $reviews->count(),
+                ],
+                'reviews' => $reviews->map(fn (Review $r) => [
+                    'id' => $r->id,
+                    'author' => $r->public_author,
+                    'rating' => $r->rating,
+                    'title' => $r->title,
+                    'comment' => $r->comment,
+                    'verified' => $r->verified,
+                    'created_at' => $r->created_at?->toISOString(),
+                ])->values()->all(),
             ],
         ]);
     }
@@ -437,6 +456,65 @@ class PublicHotelController extends Controller
                 'rooms' => $rooms->load('roomType:id,name')->values(),
             ],
         ]);
+    }
+
+    public function storeReview(Request $request, string $slug)
+    {
+        $hotel = Hotel::query()->where('slug', $slug)->where('status', 'active')->first();
+
+        if (! $hotel) {
+            return response()->json(['message' => 'Hotel not found.', 'error' => 'NOT_FOUND'], 404);
+        }
+
+        $validated = $request->validate([
+            'booking_number' => ['required', 'string', 'max:60'],
+            'email' => ['required', 'email', 'max:191'],
+            'rating' => ['required', 'integer', 'min:1', 'max:5'],
+            'title' => ['nullable', 'string', 'max:191'],
+            'comment' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $booking = Booking::query()
+            ->where('hotel_id', $hotel->id)
+            ->where('booking_number', $validated['booking_number'])
+            ->first();
+
+        $emailMatches = $booking && $booking->guest
+            && strcasecmp((string) $booking->guest->email, (string) $validated['email']) === 0;
+
+        if (! $booking || ! $emailMatches) {
+            return response()->json(['message' => 'Booking not found.', 'error' => 'BOOKING_NOT_FOUND'], 422);
+        }
+
+        if ($booking->status !== 'checked_out') {
+            return response()->json(['message' => 'Stay not completed.', 'error' => 'STAY_NOT_COMPLETED'], 422);
+        }
+
+        if (Review::query()->where('booking_id', $booking->id)->exists()) {
+            return response()->json(['message' => 'Already reviewed.', 'error' => 'STAY_ALREADY_REVIEWED'], 422);
+        }
+
+        $guestName = trim(($booking->guest->first_name ?? '').' '.($booking->guest->last_name ?? ''));
+
+        $review = Review::create([
+            'hotel_id' => $hotel->id,
+            'booking_id' => $booking->id,
+            'guest_name' => $guestName !== '' ? $guestName : 'Guest',
+            'rating' => $validated['rating'],
+            'title' => $validated['title'] ?? null,
+            'comment' => $validated['comment'] ?? '',
+            'status' => 'published',
+            'verified' => true,
+        ]);
+
+        return response()->json([
+            'data' => [
+                'id' => $review->id,
+                'rating' => $review->rating,
+                'verified' => $review->verified,
+                'author' => $review->public_author,
+            ],
+        ], 201);
     }
 
     private function frontendUrl(string $path): string

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Booking;
 use App\Models\Guest;
 use App\Models\Hotel;
+use App\Models\Review;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
@@ -22,6 +23,22 @@ use Illuminate\Validation\ValidationException;
  */
 class GuestAuthController extends Controller
 {
+    public function me(Request $request)
+    {
+        $guest = $request->user();
+        abort_if(! $guest instanceof Guest, 403, 'Guests only.');
+
+        return response()->json([
+            'data' => [
+                'id' => $guest->id,
+                'first_name' => $guest->first_name,
+                'last_name' => $guest->last_name,
+                'email' => $guest->email,
+                'phone' => $guest->phone,
+            ],
+        ]);
+    }
+
     public function login(Request $request)
     {
         $validated = $request->validate([
@@ -166,6 +183,66 @@ class GuestAuthController extends Controller
      * is supplied, only the current hotel's bookings are returned so that two
      * different hotels' guest pages never surface the same union list.
      */
+    public function storeReview(Request $request)
+    {
+        $guest = $request->user();
+        abort_if(! $guest instanceof Guest, 403, 'Guests only.');
+
+        $validated = $request->validate([
+            'booking_id' => ['required', 'integer'],
+            'rating' => ['required', 'integer', 'min:1', 'max:5'],
+            'title' => ['nullable', 'string', 'max:191'],
+            'comment' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $email = mb_strtolower(trim((string) $guest->email));
+
+        $guestIds = Guest::query()
+            ->withoutGlobalScopes()
+            ->whereRaw('LOWER(email) = ?', [$email])
+            ->pluck('id')
+            ->all();
+
+        $booking = Booking::query()
+            ->withoutGlobalScopes()
+            ->whereIn('guest_id', $guestIds)
+            ->where('id', $validated['booking_id'])
+            ->first();
+
+        if (! $booking) {
+            return response()->json(['message' => 'Booking not found.', 'error' => 'BOOKING_NOT_FOUND'], 422);
+        }
+
+        if ($booking->status !== 'checked_out') {
+            return response()->json(['message' => 'Stay not completed.', 'error' => 'STAY_NOT_COMPLETED'], 422);
+        }
+
+        if (Review::query()->where('booking_id', $booking->id)->exists()) {
+            return response()->json(['message' => 'Already reviewed.', 'error' => 'STAY_ALREADY_REVIEWED'], 422);
+        }
+
+        $guestName = trim($guest->first_name.' '.$guest->last_name);
+
+        $review = Review::create([
+            'hotel_id' => $booking->hotel_id,
+            'booking_id' => $booking->id,
+            'guest_name' => $guestName !== '' ? $guestName : 'Guest',
+            'rating' => $validated['rating'],
+            'title' => $validated['title'] ?? null,
+            'comment' => $validated['comment'] ?? '',
+            'status' => 'published',
+            'verified' => true,
+        ]);
+
+        return response()->json([
+            'data' => [
+                'id' => $review->id,
+                'rating' => $review->rating,
+                'verified' => $review->verified,
+            ],
+        ], 201);
+    }
+
     public function myBookings(Request $request)
     {
         $guest = $request->user();
@@ -219,6 +296,7 @@ class GuestAuthController extends Controller
     private function present(Booking $booking): array
     {
         return [
+            'id' => $booking->id,
             'booking_number' => $booking->booking_number,
             'status' => $booking->status,
             'check_in' => $booking->check_in?->toDateString(),
@@ -228,6 +306,8 @@ class GuestAuthController extends Controller
             'children' => $booking->children,
             'total_cents' => $booking->total_cents,
             'paid_cents' => $booking->paid_cents,
+            'reviewed' => Review::query()->where('booking_id', $booking->id)->exists(),
+            'rating' => Review::query()->where('booking_id', $booking->id)->value('rating'),
             'currency' => $booking->hotel?->currency,
             'hotel' => $booking->hotel
                 ? [

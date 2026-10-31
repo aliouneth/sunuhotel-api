@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\EmployeeController;
 use App\Http\Controllers\Api\V1\ExpenseController;
 use App\Http\Controllers\Api\V1\ExpenseTypeController;
+use App\Http\Controllers\Api\V1\GuestAuthController;
 use App\Http\Controllers\Api\V1\GuestController;
 use App\Http\Controllers\Api\V1\HotelBillingController;
 use App\Http\Controllers\Api\V1\HotelController;
@@ -77,9 +78,16 @@ Route::prefix('v1')->group(function () {
     Route::post('/paydunya/booking-ipn', [PayDunyaBookingController::class, 'ipn']);
     Route::get('/paydunya/booking-status/{token}', [PayDunyaBookingController::class, 'status']);
 
-    // No guest self-service auth exists anymore. Guests are only created and
-    // looked up as booking data; the public guest portal lets a visitor make a
-    // new reservation without any account or token.
+    // Guest self-service auth (outside tenant scope).
+    Route::post('/guest/login', [GuestAuthController::class, 'login']);
+    Route::post('/guest/forgot-password', [GuestAuthController::class, 'forgotPassword']);
+    Route::post('/guest/reset-password', [GuestAuthController::class, 'resetPassword']);
+
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::get('/guest/me', [GuestAuthController::class, 'me']);
+        Route::get('/guest/me/bookings', [GuestAuthController::class, 'myBookings']);
+        Route::post('/guest/me/reviews', [GuestAuthController::class, 'storeReview']);
+    });
 
     /* ------------------------ Platform administration ------------------- */
 
