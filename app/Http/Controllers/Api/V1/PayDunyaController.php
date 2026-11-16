@@ -54,7 +54,7 @@ class PayDunyaController extends Controller
 
         try {
             $result = $this->paydunya->createInvoice($invoice, $hotel, [
-                'return_url' => $this->frontendUrl('/dashboard/billing'),
+                'return_url' => $this->frontendUrl('/dashboard/billing/thank-you'),
                 'cancel_url' => $this->frontendUrl('/dashboard/billing'),
                 'callback_url' => url('/api/v1/paydunya/ipn'),
             ]);

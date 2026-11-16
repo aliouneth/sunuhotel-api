@@ -29,9 +29,27 @@ class AuthController extends Controller
             'locale' => ['sometimes', 'in:fr,en'],
             'hotel' => ['required', 'array'],
             'hotel.name' => ['required', 'string', 'max:120'],
-            'hotel.slug' => ['sometimes', 'string', 'max:60', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/', 'unique:hotels,slug'],
+            'hotel.legal_name' => ['sometimes', 'nullable', 'string', 'max:160'],
+            'hotel.address' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'hotel.city' => ['sometimes', 'nullable', 'string', 'max:120'],
             'hotel.country' => ['sometimes', 'string', 'max:2'],
             'hotel.currency' => ['sometimes', 'string', 'size:3'],
+            'hotel.phone' => ['sometimes', 'nullable', 'string', 'max:40'],
+            'hotel.phone_2' => ['sometimes', 'nullable', 'string', 'max:40'],
+            'hotel.email' => ['sometimes', 'nullable', 'email', 'max:191'],
+            'hotel.website' => ['sometimes', 'nullable', 'url', 'max:191'],
+            'hotel.description' => ['sometimes', 'nullable', 'string', 'max:5000'],
+            'hotel.other_services' => ['sometimes', 'nullable', 'string', 'max:5000'],
+            'hotel.tax_rate' => ['sometimes', 'nullable', 'numeric', 'between:0,100'],
+            'hotel.stars' => ['sometimes', 'nullable', 'integer', 'between:1,5'],
+            'hotel.check_in_time' => ['sometimes', 'nullable', 'string', 'date_format:H:i'],
+            'hotel.check_out_time' => ['sometimes', 'nullable', 'string', 'date_format:H:i'],
+            'hotel.timezone' => ['sometimes', 'nullable', 'string', 'max:64', 'timezone'],
+            'hotel.locale' => ['sometimes', 'nullable', 'string', 'in:fr,en'],
+            'hotel.has_restaurant' => ['sometimes', 'boolean'],
+            'hotel.has_spa' => ['sometimes', 'boolean'],
+            'hotel.has_leisure' => ['sometimes', 'boolean'],
+            'hotel.phone' => ['sometimes', 'string', 'max:32'],
             'hotel.timezone' => ['sometimes', 'string', 'max:64'],
             'hotel.has_restaurant' => ['sometimes', 'boolean'],
             'hotel.has_spa' => ['sometimes', 'boolean'],
@@ -44,15 +62,28 @@ class AuthController extends Controller
         return \DB::transaction(function () use ($validated, $locale, $request) {
             $hotel = Hotel::create([
                 'uuid' => (string) Str::uuid(),
-                'slug' => $validated['hotel']['slug'] ?? Str::slug($validated['hotel']['name']).'-'.Str::lower(Str::random(4)),
+                'slug' => Str::slug($validated['hotel']['name']).'-'.Str::lower(Str::random(4)),
                 'name' => $validated['hotel']['name'],
+                'legal_name' => $validated['hotel']['legal_name'] ?? null,
+                'address' => $validated['hotel']['address'] ?? null,
+                'city' => $validated['hotel']['city'] ?? null,
                 'country' => $validated['hotel']['country'] ?? null,
+                'phone' => $validated['hotel']['phone'] ?? null,
+                'phone_2' => $validated['hotel']['phone_2'] ?? null,
+                'email' => $validated['hotel']['email'] ?? null,
+                'website' => $validated['hotel']['website'] ?? null,
+                'description' => $validated['hotel']['description'] ?? null,
+                'other_services' => $validated['hotel']['other_services'] ?? null,
                 'currency' => $validated['hotel']['currency'] ?? 'USD',
                 'timezone' => $validated['hotel']['timezone'] ?? 'UTC',
+                'tax_rate' => $validated['hotel']['tax_rate'] ?? 0,
+                'stars' => $validated['hotel']['stars'] ?? null,
+                'check_in_time' => $validated['hotel']['check_in_time'] ?? '15:00',
+                'check_out_time' => $validated['hotel']['check_out_time'] ?? '11:00',
                 'has_restaurant' => (bool) ($validated['hotel']['has_restaurant'] ?? false),
                 'has_spa' => (bool) ($validated['hotel']['has_spa'] ?? false),
                 'has_leisure' => (bool) ($validated['hotel']['has_leisure'] ?? false),
-                'settings' => ['locale' => $locale],
+                'settings' => ['locale' => $validated['hotel']['locale'] ?? $locale],
                 // New tenants must be reviewed and activated by a platform admin.
                 'status' => 'pending',
             ]);
@@ -74,6 +105,9 @@ class AuthController extends Controller
                 'password' => $validated['password'],
                 'locale' => $locale,
             ]);
+
+            // Track the founder as the hotel's creator.
+            $hotel->update(['created_by' => $user->id]);
 
             // Materialise global permissions + role definitions once, then
             // assign the founder the `owner` role inside this hotel's team context.

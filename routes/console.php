@@ -2,10 +2,21 @@
 
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('analytics:prune', function () {
+    $deleted = App\Models\PageView::query()
+        ->whereDate('viewed_on', '<', now()->subMonths(13)->toDateString())
+        ->delete();
+
+    $this->info("Deleted {$deleted} page views older than 13 months.");
+})->purpose('Prune anonymous audience data older than 13 months');
+
+Schedule::command('analytics:prune')->daily();
 
 Artisan::command('billing:probe', function () {
     $billing = new App\Services\BillingService();

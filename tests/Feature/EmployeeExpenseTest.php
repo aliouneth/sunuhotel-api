@@ -189,6 +189,9 @@ class EmployeeExpenseTest extends TestCase
 
     public function test_month_filter_clamps_out_of_range_end_date(): void
     {
+        $this->travelTo('2026-09-15 12:00:00');
+        $this->beforeApplicationDestroyed(fn () => $this->travelBack());
+
         [$hotel, $user] = $this->makeTenant();
         $employee = Employee::factory()->create([
             'hotel_id' => $hotel->id,

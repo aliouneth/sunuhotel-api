@@ -57,7 +57,7 @@ class PlatformAdminController extends Controller
             // "name" narrows `search` to the hotel name alone; the default
             // matches name, slug, city or the owner's email.
             'search_field' => ['sometimes', 'string', 'in:all,name'],
-            'sort' => ['sometimes', 'string', 'in:status,name,name_desc'],
+            'sort' => ['sometimes', 'string', 'in:status,name,name_desc,recent'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ]);
 
@@ -85,6 +85,7 @@ class PlatformAdminController extends Controller
             // unique, and paginate() needs a total order to stay stable.
             ->when($sort === 'name', fn ($q) => $q->orderBy('name')->orderBy('id'))
             ->when($sort === 'name_desc', fn ($q) => $q->orderByDesc('name')->orderBy('id'))
+            ->when($sort === 'recent', fn ($q) => $q->orderByDesc('created_at')->orderByDesc('id'))
             ->when($sort === 'status', fn ($q) => $q
                 ->orderByRaw("case status when 'pending' then 0 else 1 end")
                 ->orderBy('id', 'desc'))
@@ -740,6 +741,7 @@ class PlatformAdminController extends Controller
     private function present(Hotel $hotel): array
     {
         $owner = $hotel->users()->orderBy('id')->first();
+        $creator = $hotel->created_by ? User::find($hotel->created_by) : $owner;
 
         return [
             'id' => $hotel->id,
@@ -771,6 +773,12 @@ class PlatformAdminController extends Controller
             'locale' => $hotel->settings['locale'] ?? null,
             'images' => $hotel->hotelImages->map(fn ($img) => ['id' => $img->id, 'image_url' => $img->image_url, 'sort_order' => $img->sort_order])->values(),
             'created_at' => $hotel->created_at?->toISOString(),
+            'created_by' => $hotel->created_by,
+            'creator' => $creator ? [
+                'id' => $creator->id,
+                'name' => $creator->name,
+                'email' => $creator->email,
+            ] : null,
             'users_count' => $hotel->users_count ?? $hotel->users()->count(),
             'rooms_count' => $hotel->rooms_count ?? $hotel->rooms()->count(),
             'bookings_count' => $hotel->bookings_count ?? $hotel->bookings()->count(),

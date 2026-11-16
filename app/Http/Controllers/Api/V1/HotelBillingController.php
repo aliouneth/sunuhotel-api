@@ -50,4 +50,31 @@ class HotelBillingController extends Controller
             ],
         ]);
     }
+
+    public function paymentStatus(Request $request, string $token)
+    {
+        $this->authorize('payments.view');
+
+        $hotel = $request->user()->hotel;
+        $invoice = MonthlyInvoice::query()
+            ->where('hotel_id', $hotel->id)
+            ->where('reference', $token)
+            ->with('plan')
+            ->first();
+
+        if (! $invoice) {
+            return response()->json(['message' => 'Unknown payment.'], 404);
+        }
+
+        return response()->json([
+            'data' => [
+                'status' => $invoice->status,
+                'billing_month' => $invoice->billing_month,
+                'amount_cents' => $invoice->amount_cents,
+                'paid_cents' => $invoice->paid_cents,
+                'currency' => $invoice->currency,
+                'plan' => $invoice->plan?->only(['id', 'name']),
+            ],
+        ]);
+    }
 }

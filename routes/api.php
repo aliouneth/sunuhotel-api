@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\V1\AmenityController;
+use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BookingAvailabilityController;
 use App\Http\Controllers\Api\V1\BookingController;
@@ -50,23 +51,30 @@ Route::prefix('v1')->group(function () {
 
     /* ----------------------------- Public ----------------------------- */
 
-    Route::post('/register', [AuthController::class, 'register']);
-    Route::post('/login', [AuthController::class, 'login']);
-    Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+    // Anti-spam / brute-force: strict IP-based limits on unauthenticated writes.
+    Route::middleware('throttle:10,1')->group(function () {
+        Route::post('/register', [AuthController::class, 'register']);
+        Route::post('/login', [AuthController::class, 'login']);
+        Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+    });
 
     Route::get('/invitations/{token}', [InvitationController::class, 'show']);
     Route::post('/invitations/{token}/accept', [InvitationController::class, 'accept']);
 
-    Route::get('/hotels/search', [PublicHotelController::class, 'search']);
-    Route::get('/hotels/cities', [PublicHotelController::class, 'cities']);
-    Route::get('/hotels/promotions', [PublicHotelController::class, 'promotions']);
-    Route::get('/hotels/{hotel}/public', [PublicHotelController::class, 'show'])->where('hotel', '[a-z0-9-]+');
-    Route::get('/hotels/{hotel}/public/availability', [PublicHotelController::class, 'availability'])->where('hotel', '[a-z0-9-]+');
-    Route::post('/hotels/{hotel}/public/bookings', [PublicHotelController::class, 'storeBooking'])->where('hotel', '[a-z0-9-]+');
-    Route::post('/hotels/{hotel}/public/reviews', [PublicHotelController::class, 'storeReview'])->where('hotel', '[a-z0-9-]+');
+    Route::get('/hotels/search', [PublicHotelController::class, 'search'])->middleware('throttle:60,1');
+    Route::get('/hotels/cities', [PublicHotelController::class, 'cities'])->middleware('throttle:60,1');
+    Route::get('/hotels/promotions', [PublicHotelController::class, 'promotions'])->middleware('throttle:60,1');
+    Route::get('/hotels/{hotel}/public', [PublicHotelController::class, 'show'])->where('hotel', '[a-z0-9-]+')->middleware('throttle:60,1');
+    Route::get('/hotels/{hotel}/public/availability', [PublicHotelController::class, 'availability'])->where('hotel', '[a-z0-9-]+')->middleware('throttle:30,1');
+    // Guest-generated content is a spam target: cap writes at 5/min per IP.
+    Route::post('/hotels/{hotel}/public/bookings', [PublicHotelController::class, 'storeBooking'])->where('hotel', '[a-z0-9-]+')->middleware('throttle:5,1');
+    Route::post('/hotels/{hotel}/public/reviews', [PublicHotelController::class, 'storeReview'])->where('hotel', '[a-z0-9-]+')->middleware('throttle:3,1');
 
     // Public corporate contact info for the registration ("under review") screen.
     Route::get('/platform/support', [PlatformAdminController::class, 'support']);
+
+    // First-party audience measurement beacon (public pages, consent-gated).
+    Route::post('/analytics/collect', [AnalyticsController::class, 'collect'])->middleware('throttle:120,1');
 
     // PayDunya IPN (Instant Payment Notification). Must stay public: PayDunya
     // posts the transaction result here server-to-server, authenticated by a
@@ -79,9 +87,11 @@ Route::prefix('v1')->group(function () {
     Route::get('/paydunya/booking-status/{token}', [PayDunyaBookingController::class, 'status']);
 
     // Guest self-service auth (outside tenant scope).
-    Route::post('/guest/login', [GuestAuthController::class, 'login']);
-    Route::post('/guest/forgot-password', [GuestAuthController::class, 'forgotPassword']);
-    Route::post('/guest/reset-password', [GuestAuthController::class, 'resetPassword']);
+    Route::middleware('throttle:10,1')->group(function () {
+        Route::post('/guest/login', [GuestAuthController::class, 'login']);
+        Route::post('/guest/forgot-password', [GuestAuthController::class, 'forgotPassword']);
+        Route::post('/guest/reset-password', [GuestAuthController::class, 'resetPassword']);
+    });
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('/guest/me', [GuestAuthController::class, 'me']);
@@ -93,6 +103,7 @@ Route::prefix('v1')->group(function () {
 
     Route::middleware(['auth:sanctum', 'platform.admin'])->prefix('platform')->group(function () {
         Route::get('/summary', [PlatformAdminController::class, 'summary']);
+        Route::get('/analytics', [AnalyticsController::class, 'summary']);
         Route::get('/hotels', [PlatformAdminController::class, 'hotels']);
         Route::post('/hotels', [PlatformAdminController::class, 'storeHotel']);
         Route::get('/hotels/{hotel}', [PlatformAdminController::class, 'show']);
@@ -171,6 +182,7 @@ Route::prefix('v1')->group(function () {
 
         // Hotel billing view (bills due to the platform).
         Route::get('/billing', [HotelBillingController::class, 'index'])->middleware('permission:payments.view');
+        Route::get('/billing/payment-status/{token}', [HotelBillingController::class, 'paymentStatus'])->middleware('permission:payments.view');
 
         // Pay a monthly invoice online via PayDunya (returns a payment URL).
         Route::post('/billing/invoices/{invoice}/paydunya', [PayDunyaController::class, 'initiate'])
